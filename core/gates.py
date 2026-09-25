@@ -172,6 +172,26 @@ GATES = [
         module='core/generator.py',
     ),
     Gate(
+        id='isf-multiple-image-inputs',
+        trigger='two or more ISF INPUTS entries with TYPE "image"',
+        reason='declares %d distinct image inputs',
+        evidence=(
+            'formal-spec.md:26 and :274 - every image input maps to a SINGLE '
+            'sampler, imageTex. Verified on a real case: GLSLOP '
+            'developer-k0rz1pe2.fs declares six (src0..src5) and passes each '
+            'to a different call. Collapsing them onto one imageTex left the '
+            'body referencing samplers that were never declared, so the '
+            'output did not compile. Found by running that collection, not by '
+            'any test. The ISF counterpart of shadertoy-multi-channel.'
+        ),
+        allows=(
+            'A single TYPE:"image" input converts normally: its sampler is '
+            'resolved against imageTex and it never becomes a manifest knob, '
+            'since the image is implicit (formal-spec.md:183).'
+        ),
+        module='core/generator.py',
+    ),
+    Gate(
         id='shadertoy-unrepresentable-channel',
         trigger='metadata declaring a channel as buffer/cubemap/audio',
         reason='is not a plain image',

@@ -192,8 +192,8 @@ MUTATIONS = [
     Mutation(
         name='generator: put the image input in the manifest',
         path='core/generator.py',
-        find="            seen_image = True\n            continue",
-        replace="            clean = _snake(name)\n            manifest.append({'name': clean, 'default': 0.0})",
+        find="            seen_image = True\n            _image_inputs.append(str(name))\n            continue",
+        replace="            seen_image = True\n            manifest.append({'name': _snake(name), 'default': 0.0})",
         selector='test_engine.HardGateTests',
         why=('formal-spec.md: "No image parameter is declared in the manifest. '
              'The image is implicit." An image is not a knob.'),
@@ -318,5 +318,28 @@ MUTATIONS = [
         why=('GLSLSandbox is advertised in --help. It had zero coverage until '
              'this suite; the one manual run that "verified" it was exactly '
              'the kind of unverified claim the tests exist to prevent.'),
+    ),
+
+    # ---- ISF image inputs, from the GLSLOP collection ----------------
+    Mutation(
+        name='generator: allow multiple ISF image inputs',
+        path='core/generator.py',
+        find='    if len(_image_inputs) > 1:',
+        replace='    if False:',
+        selector='test_engine.IsfImageInputTests',
+        why=('N distinct image inputs collapsed onto one imageTex, leaving the '
+             'body referencing samplers that were never declared - output that '
+             'does not compile. Real case: GLSLOP developer-k0rz1pe2.fs with '
+             'six image inputs.'),
+    ),
+    Mutation(
+        name='corpus_scan: count readme.txt as a shader',
+        path='tests/corpus_scan.py',
+        find="            if any(h in stem for h in _PROSE_HINTS):\n                continue",
+        replace='            pass',
+        selector='test_isf_collections',
+        why=('Collections ship readme.txt and similar; counting them as '
+             'sources reported a documentation file as an unconvertible '
+             'shader.'),
     ),
 ]

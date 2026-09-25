@@ -1,0 +1,7 @@
+# Third-party shader collections used as test input by
+# vs2_convert/tests/corpus_scan.py and test_isf_collections.py.
+# Both discover collections by walking the tree, so these can be
+# added, moved or removed without any code change.
+# Not tracked: they are not ours to carry.
+VDMX_collection/
+GLSLOP_collection/

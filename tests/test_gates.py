@@ -94,6 +94,11 @@ ALLOWED_CASES = {
     'shadertoy-unrepresentable-channel': lambda: not _raises_on(
         'void mainImage(out vec4 f, in vec2 c){'
         ' f = vec4(texture(iChannel0, c / 9.0).rgb, 1.0); }', 'Shadertoy'),
+    # a single ISF image input is still allowed to convert
+    'isf-multiple-image-inputs': lambda: not _raises_on(
+        '/*{"INPUTS": [{"NAME": "src0", "TYPE": "image"}]}*/\n'
+        'uniform sampler2D src0;\nvoid main() {\n'
+        '    fragColor = texture(src0, gl_FragCoord.xy / 100.0);\n}\n', 'ISF'),
     # a custom uniform is not an engine var
     'engine-var-redeclaration': lambda: check_suitability(
         'uniform float myParam;\n' + MINIMAL_BODY)['suitable'],

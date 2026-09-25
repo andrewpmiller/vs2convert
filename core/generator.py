@@ -775,6 +775,7 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
     baked = {}
     used_names = set()
     seen_image = False
+    _image_inputs = []
     for inp in inputs:
         name = inp.get('NAME', '')
         itype = inp.get('TYPE', 'float')
@@ -796,6 +797,7 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
                 f"imageTex, which VS-2 binds from the image configured on the "
                 f"layer. It needs an image set in VS-2 to show anything.")
             seen_image = True
+            _image_inputs.append(str(name))
             continue
         clean = _snake(name)
         while clean in used_names or clean in ENGINE_VARS:
@@ -848,6 +850,23 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
     # ISF spells the sampler as `sampler_main`/`sampler_image`/`sampler`, or
     # uses an image uniform directly; all of them become the engine's
     # imageTex, which VS-2 binds from the layer's configured image.
+    # MULTIPLE distinct image inputs cannot be represented. VS-2 binds ONE
+    # image to imageTex, so N image inputs would all collapse onto the same
+    # sampler - and the shader passes them to different places, so the result
+    # is not merely imprecise, it references samplers that were never declared
+    # and will not compile. Real case: GLSLOP developer-k0rz1pe2.fs declares
+    # six (src0..src5) and passed each to a different call.
+    #
+    # This is the ISF counterpart of the Shadertoy multi-channel gate, and it
+    # rests on the same evidence: formal-spec.md:26 and :274 map every image
+    # input to a SINGLE sampler, imageTex.
+    if len(_image_inputs) > 1:
+        raise ConversionError(
+            "declares %d distinct image inputs (%s): VS-2 binds a single "
+            "image to imageTex, so they cannot all be preserved. Convert by "
+            "hand via the vs2-shader-expert skill"
+            % (len(_image_inputs), ', '.join(_image_inputs[:4])))
+
     if seen_image:
         # ISF image accessors (docs.isf.video/ref_json): IMG_NORM_PIXEL(name, uv)
         # and IMG_THIS_PIXEL(name) read the image named in INPUTS. VS-2 exposes a

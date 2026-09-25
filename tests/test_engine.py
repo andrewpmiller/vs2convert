@@ -676,6 +676,62 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         self.assertEqual(detect_format(src)['format'], 'Shadertoy')
 
 
+MULTI_IMAGE_ISF = """/*{
+  "INPUTS": [
+    {"NAME": "src0", "TYPE": "image", "SOURCE": "a"},
+    {"NAME": "src1", "TYPE": "image", "SOURCE": "b"}
+  ]
+}*/
+uniform sampler2D src0;
+uniform sampler2D src1;
+void main() {
+    fragColor = texture(src0, gl_FragCoord.xy / 100.0)
+              + texture(src1, gl_FragCoord.xy / 100.0);
+}
+"""
+
+SINGLE_IMAGE_ISF = """/*{
+  "INPUTS": [ {"NAME": "src0", "TYPE": "image", "SOURCE": "a"} ]
+}*/
+uniform sampler2D src0;
+void main() {
+    fragColor = texture(src0, gl_FragCoord.xy / 100.0);
+}
+"""
+
+
+class IsfImageInputTests(unittest.TestCase):
+    """Multiple distinct ISF image inputs cannot be represented.
+
+    Found 2026-09-25 by running the GLSLOP collection: developer-k0rz1pe2.fs
+    declares six image inputs (src0..src5) and passes each to a different
+    call. The converter collapsed them all onto imageTex, leaving the body
+    referencing samplers that were never declared - GLSL that does not
+    compile. Found by a real collection, not by any test.
+
+    This is the ISF counterpart of the Shadertoy multi-channel gate and rests
+    on the same evidence: formal-spec.md:26 and :274 map every image input to
+    a SINGLE sampler.
+    """
+
+    def test_multiple_image_inputs_are_declined(self):
+        with self.assertRaises(ConversionError) as ctx:
+            convert(MULTI_IMAGE_ISF, 'ISF', 'p')
+        self.assertIn('image input', str(ctx.exception))
+        self.assertIn('imageTex', str(ctx.exception))
+
+    def test_single_image_input_still_converts(self):
+        """Counterpart, so the fix cannot have blocked ordinary image shaders."""
+        frag = convert(SINGLE_IMAGE_ISF, 'ISF', 'p')['frag']
+        self.assertIn('imageTex', frag)
+        self.assertNotIn('src0', frag)
+
+    def test_image_input_never_becomes_a_manifest_knob(self):
+        names = [p['name'] for p in
+                 convert(SINGLE_IMAGE_ISF, 'ISF', 'p')['params']]
+        self.assertNotIn('src0', names)
+
+
 class HardGateTests(unittest.TestCase):
     def test_feedback_buffer_rejected(self):
         with self.assertRaises(ConversionError) as ctx:
