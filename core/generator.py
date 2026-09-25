@@ -734,14 +734,31 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
     # Per docs.isf.video/ref_json and the canonical Test-ImportedImage.fs.
     # These are pixel data travelling with the .fs; VS-2 has no equivalent,
     # so refuse rather than silently drop the blend.
+    #
+    # USAGE, NOT DECLARATION. Only refuse when the body actually SAMPLES an
+    # imported resource. Declaring one is not the same as using one:
+    # `phreax twisted carbon.fs` declares TEXTURE_0 in IMPORTED but its only
+    # reference is inside a `//` comment, so it converts fine without one.
+    # The first version of this gate keyed on the manifest alone and declined
+    # a perfectly good shader - caught by running the 41-source ISF corpus,
+    # not by any test. Same error class as the earlier blanket image-input
+    # decline: refusing on a structural fact instead of actual usage.
     _imported = header_all.get('IMPORTED') if isinstance(header_all, dict) else None
     if _imported:
-        _names = ', '.join(sorted(_imported)[:4])
-        raise ConversionError(
-            f"bundled image resources in IMPORTED ({_names}): these are image "
-            f"files shipped with the .fs, and VS-2 has nowhere to put them. "
-            f"Supply the image in VS-2 instead, or convert by hand via the "
-            f"vs2-shader-expert skill")
+        _body = code_only(source)
+        _used = [n for n in sorted(_imported)
+                 if re.search(r'\b' + re.escape(str(n)) + r'\b', _body)]
+        if _used:
+            raise ConversionError(
+                f"bundled image resources in IMPORTED ({', '.join(_used[:4])}): "
+                f"the body samples them, and they are image files shipped with "
+                f"the .fs, so VS-2 has nowhere to put them. Supply the image in "
+                f"VS-2 instead, or convert by hand via the vs2-shader-expert "
+                f"skill")
+        report['warnings'].append(
+            "IMPORTED declares %d image resource(s) that the body never "
+            "samples, so they were dropped. Harmless, but check the source if "
+            "that is not expected." % len(_imported))
 
     # Non-ISF GLSL texture calls. Genuinely unrepresentable: these imply a
     # multi-pass merge, which VS-2 does not have.
