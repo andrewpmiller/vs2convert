@@ -8,6 +8,8 @@ import json
 import re
 from pathlib import Path
 
+from .textutil import code_only
+
 
 # --- Detection Patterns ---
 
@@ -29,21 +31,6 @@ HLSL_LERP_RE = re.compile(r'\blerp\s*\(')
 HLSL_TEXTURE2D_RE = re.compile(r'\btexture2D\s*\(|\btex2D\s*\(')
 
 
-def _code_only(source: str) -> str:
-    """Source with comments removed, preserving line structure.
-
-    HLSL/API checks must not fire on a mention inside a comment: a converted
-    shader legitimately carries comments like "original: lerp(a, b, c)" that
-    would otherwise be misread as unconverted HLSL. Newlines are preserved so
-    per-line checks (engine-var redeclaration) keep their line numbers.
-    """
-    def _blank(m):
-        return re.sub(r'[^\n]', ' ', m.group(0))
-    out = re.sub(r'/\*.*?\*/', _blank, source, flags=re.DOTALL)
-    out = re.sub(r'//[^\n]*', _blank, out)
-    return out
-
-
 def detect_format(source: str) -> dict:
     """
     Detect input format from source code.
@@ -60,7 +47,7 @@ def detect_format(source: str) -> dict:
     
     # HLSL/API checks run against code only: a comment mentioning `lerp(` is
     # documentation of the original, not unconverted HLSL.
-    code = _code_only(source)
+    code = code_only(source)
 
     # Check for HLSL leftovers (definitely not suitable)
     if HLSL_FRACTION_RE.search(code):
@@ -141,7 +128,7 @@ def check_suitability(source: str) -> dict:
     """
     # Reuse detection errors
     result = detect_format(source)
-    code = _code_only(source)
+    code = code_only(source)
     
     # Additional suitability checks
     # Check parameter count (max 7)

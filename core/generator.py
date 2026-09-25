@@ -21,6 +21,8 @@ import re
 import json
 import uuid as _uuid
 
+from .textutil import code_only
+
 MAX_PARAMS = 7
 SPEED_KEYWORDS = ('speed', 'rate', 'frequency', 'freq')
 
@@ -560,7 +562,9 @@ def convert(source: str, fmt: str, shader_name: str) -> dict:
     """
     report = {'warnings': [], 'baked': [], 'params': []}
 
-    if re.search(r'\b(frac|lerp|tex2D|texture2D)\s*\(', source):
+    # Scan code with comments blanked: a comment naming frac()/lerp() is
+    # documentation of the original, not unconverted HLSL.
+    if re.search(r'\b(frac|lerp|tex2D|texture2D)\s*\(', code_only(source)):
         raise ConversionError(
             "HLSL/bundled-texture source (MilkDrop): multi-pass merge is not "
             "automated; convert by hand via the vs2-shader-expert skill")
