@@ -273,7 +273,7 @@ def _build_manifest(params: list, shader_name: str) -> str:
 # format-specific body transforms
 # ---------------------------------------------------------------------------
 
-def _convert_shadertoy(source: str, report: dict) -> tuple:
+def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
     """Returns (body, manifest_params)."""
     raw_params = _find_manifest_params(source)
     if not raw_params:
@@ -313,13 +313,32 @@ def _convert_shadertoy(source: str, report: dict) -> tuple:
         # the output is marked so it cannot be mistaken for a verified
         # conversion. See gates.py:shadertoy-channel-uncertainty.
         _slot = _channels[0]
-        report['warnings'].append(
-            "UNVERIFIED: iChannel%s is a Shadertoy binding slot, not a "
-            "guaranteed image - it may be a feedback buffer, cubemap, video, "
-            "or audio. Mapped to VS-2's imageTex, which binds the image set on "
-            "the layer. Confirm against the Shadertoy page's pass settings "
-            "that slot %s really is a single user image; if not, this "
-            "conversion is wrong and needs doing by hand." % (_slot, _slot))
+        # If the user supplied pass metadata, we no longer have to guess.
+        from .shadertoy_meta import resolve_channels
+        _status, _notes = resolve_channels(meta, _channels)
+        if _status == 'confirmed':
+            for _n in _notes:
+                report['warnings'].append('confirmed: ' + _n)
+            report['warnings'].append(
+                "iChannel%s verified from the supplied pass metadata as an "
+                "ordinary image; mapped to VS-2's imageTex." % _slot)
+        elif _status == 'unrepresentable':
+            raise ConversionError(
+                "iChannel%s is not a plain image (%s). VS-2 has a single "
+                "imageTex and cannot represent it. Convert by hand via the "
+                "vs2-shader-expert skill. Metadata said: %s"
+                % (_slot, '; '.join(_notes) or 'unrepresentable sampler',
+                   '; '.join(_notes) or '?'))
+        else:
+            report['warnings'].append(
+                "UNVERIFIED: iChannel%s is a Shadertoy binding slot, not a "
+                "guaranteed image - it may be a feedback buffer, cubemap, "
+                "video, or audio. Mapped to VS-2's imageTex, which binds the "
+                "image set on the layer. Supply pass metadata to confirm (see "
+                "core/shadertoy_meta.py), or check the Shadertoy page's pass "
+                "settings by hand." % _slot)
+            for _n in _notes:
+                report['warnings'].append('meta: ' + _n)
         if _chan_meta:
             report['warnings'].append(
                 "iChannelResolution/iChannelTime referenced: these describe "
@@ -371,7 +390,7 @@ def _convert_shadertoy(source: str, report: dict) -> tuple:
     return body, params
 
 
-def _convert_glslsandbox(source: str, report: dict) -> tuple:
+def _convert_glslsandbox(source: str, report: dict, meta: dict = None) -> tuple:
     """uniform time/resolution/mouse style source."""
     body = _strip_uniforms(source)
     if re.search(r'\bsurfacePosition\b', body):
@@ -396,7 +415,7 @@ def _convert_glslsandbox(source: str, report: dict) -> tuple:
 
 
 
-def _convert_isf(source: str, report: dict) -> tuple:
+def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
     """Returns (body, manifest_params). Parses the ISF INPUTS block."""
     inputs = None
     m = MANIFEST_BLOCK_RE.search(source)
@@ -621,13 +640,13 @@ def _forced_fallback(source: str, report: dict) -> tuple:
 
 
 def convert(source: str, fmt: str, shader_name: str,
-             force: bool = False) -> dict:
+             force: bool = False, meta: dict = None) -> dict:
     """Convert source shader to a complete VS-2 .frag string.
 
     Returns {'frag': str, 'warnings': [..], 'baked': [..], 'params': [..]}.
     Raises ConversionError for sources that cannot be converted safely.
     """
-    report = {'warnings': [], 'baked': [], 'params': []}
+    report = {'warnings': [], 'baked': [], 'params': [], 'meta': meta or {}}
 
     # Scan code with comments blanked: a comment naming frac()/lerp() is
     # documentation of the original, not unconverted HLSL.
@@ -646,7 +665,7 @@ def convert(source: str, fmt: str, shader_name: str,
         raise ConversionError(f"unsupported format: {fmt}")
 
     try:
-        body, params = fmt_map[fmt](source, report)
+        body, params = fmt_map[fmt](source, report, meta=meta)
     except ConversionError:
         # --force means "convert anyway", so a capability gate that the user
         # has explicitly overridden must not abort the run. The result is

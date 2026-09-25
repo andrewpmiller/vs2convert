@@ -172,6 +172,27 @@ GATES = [
         module='core/generator.py',
     ),
     Gate(
+        id='shadertoy-unrepresentable-channel',
+        trigger='metadata declaring a channel as buffer/cubemap/audio',
+        reason='is not a plain image',
+        evidence=(
+            'formal-spec.md:26 and :274 - a SINGLE sampler, imageTex, bound '
+            'from the layer-configured image. Verified: a converter run with '
+            'channels={"iChannel0":{"sampler":"buffer"}} refuses, and the same '
+            'shader with sampler "texture" converts. A channel declared as a '
+            'buffer, cubemap or audio input carries data one image cannot '
+            'hold, so this refusal is a fact about the target, not a '
+            'preference. Decided from supplied metadata, never guessed.'
+        ),
+        allows=(
+            'A channel declared as a texture/video/2d converts and is marked '
+            'CONFIRMED rather than unverified. A channel with no declaration '
+            'at all still converts, just unverified - refusing every unknown '
+            'channel would block the common single-user-image shader.'
+        ),
+        module='core/generator.py',
+    ),
+    Gate(
         id='shadertoy-channel-uncertainty',
         trigger='a single iChannelN read, mapped to imageTex without evidence',
         reason='UNVERIFIED: iChannel',

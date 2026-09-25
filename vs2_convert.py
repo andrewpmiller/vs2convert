@@ -20,6 +20,7 @@ Examples:
 
 import argparse
 import re
+import json
 import sys
 from pathlib import Path
 
@@ -53,6 +54,10 @@ Options:
     parser.add_argument("--dry-run", action="store_true", help="Show what would be generated without writing")
     parser.add_argument("--force", action="store_true",
                         help="Convert even when the suitability gate declines")
+    parser.add_argument("--meta", metavar="FILE",
+                        help="Shadertoy pass/channel metadata JSON. Also "
+                             "auto-detected as <stem>.stmeta.json beside the "
+                             "input, or an inline /*{...}*/ block at the top.")
     parser.add_argument("--strict", action="store_true",
                         help="Exit 5 if the conversion was only UNVERIFIED "
                              "(e.g. a Shadertoy iChannel whose binding the "
@@ -61,6 +66,7 @@ Options:
     args = parser.parse_args()
 
     from core.detector import detect_format, check_suitability
+    from core.shadertoy_meta import load_meta
     from core.generator import convert, ConversionError
     from validators.validator import run_validation
 
@@ -105,10 +111,28 @@ Options:
         for warning in suitability["warnings"]:
             print(f"  - {warning}")
 
+    # Optional Shadertoy pass metadata. The .txt is code only; what each
+    # iChannel is bound to lives in the web UI, so without this we can only
+    # guess - and say so.
+    meta = None
+    meta_from = None
+    if fmt == 'Shadertoy' or 'mainImage' in source or 'iChannel' in source:
+        try:
+            meta, meta_from = load_meta(str(source_path), source, args.meta)
+        except ValueError as e:
+            print(f"[error] {e}")
+            sys.exit(1)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"[error] Could not read pass metadata: {e}")
+            sys.exit(1)
+        if meta:
+            print(f"[info] Pass metadata: {meta_from}")
+
     # Convert
     print("[info] Converting...")
     try:
-        report = convert(source, fmt, source_path.stem, force=args.force)
+        report = convert(source, fmt, source_path.stem, force=args.force,
+                         meta=meta)
     except ConversionError as exc:
         print(f"[error] {exc}")
         sys.exit(1)

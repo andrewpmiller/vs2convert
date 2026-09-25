@@ -90,6 +90,10 @@ ALLOWED_CASES = {
         for w in convert('void main() {\n'
                          '    fragColor = texture(imageTex, texCoord);\n'
                          '}\n', 'PlainGLSL', 'p')['warnings']),
+    # a channel with no metadata is still allowed to convert (unverified)
+    'shadertoy-unrepresentable-channel': lambda: not _raises_on(
+        'void mainImage(out vec4 f, in vec2 c){'
+        ' f = vec4(texture(iChannel0, c / 9.0).rgb, 1.0); }', 'Shadertoy'),
     # a custom uniform is not an engine var
     'engine-var-redeclaration': lambda: check_suitability(
         'uniform float myParam;\n' + MINIMAL_BODY)['suitable'],

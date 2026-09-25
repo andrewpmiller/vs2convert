@@ -334,6 +334,61 @@ class ShadertoyChannelUncertaintyTests(unittest.TestCase):
                         'channel metadata has no VS-2 equivalent and must warn')
 
 
+class ShadertoyMetaTests(unittest.TestCase):
+    """Optional pass metadata resolves the iChannel guessing problem.
+
+    A Shadertoy .txt is the body only; what each channel is bound to lives in
+    the web UI. With metadata the verdict is confirmed; without it the
+    conversion is marked UNVERIFIED; with a buffer/cubemap/audio channel it
+    is refused outright.
+    """
+
+    SRC = ('void mainImage(out vec4 f, in vec2 c){'
+           ' f = vec4(texture(iChannel0, c / 9.0).rgb, 1.0); }')
+
+    def test_absent_metadata_is_unverified(self):
+        report = convert(self.SRC, 'Shadertoy', 'p')
+        self.assertTrue(any(w.startswith('UNVERIFIED')
+                            for w in report['warnings']))
+
+    def test_texture_metadata_confirms(self):
+        report = convert(self.SRC, 'Shadertoy', 'p', meta={
+            'channels': {'iChannel0': {'sampler': 'texture',
+                                       'source': 'user image'}}})
+        self.assertFalse(any(w.startswith('UNVERIFIED')
+                             for w in report['warnings']),
+                         'metadata supplied but still flagged unverified')
+        self.assertTrue(any('verified' in w for w in report['warnings']))
+
+    def test_buffer_channel_is_refused(self):
+        with self.assertRaises(ConversionError) as ctx:
+            convert(self.SRC, 'Shadertoy', 'p', meta={
+                'channels': {'iChannel0': {'sampler': 'buffer'}}})
+        self.assertIn('buffer', str(ctx.exception))
+
+    def test_cubemap_and_audio_are_refused(self):
+        for sampler in ('cubemap', 'audio'):
+            with self.assertRaises(ConversionError):
+                convert(self.SRC, 'Shadertoy', 'p', meta={
+                    'channels': {'iChannel0': {'sampler': sampler}}})
+
+    def test_channel_without_sampler_stays_unverified(self):
+        report = convert(self.SRC, 'Shadertoy', 'p', meta={
+            'channels': {'iChannel0': {}}})
+        self.assertTrue(any(w.startswith('UNVERIFIED')
+                            for w in report['warnings']))
+
+    def test_meta_resolution_helper(self):
+        from core.shadertoy_meta import resolve_channels
+        self.assertEqual(resolve_channels(None, ['0'])[0], 'unverified')
+        self.assertEqual(resolve_channels(
+            {'channels': {'iChannel0': {'sampler': 'texture'}}}, ['0'])[0],
+            'confirmed')
+        self.assertEqual(resolve_channels(
+            {'channels': {'iChannel0': {'sampler': 'buffer'}}}, ['0'])[0],
+            'unrepresentable')
+
+
 class HardGateTests(unittest.TestCase):
     def test_feedback_buffer_rejected(self):
         with self.assertRaises(ConversionError) as ctx:
