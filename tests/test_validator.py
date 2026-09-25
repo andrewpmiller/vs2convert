@@ -226,24 +226,36 @@ class SuitabilityGateTests(unittest.TestCase):
         self.assertFalse(r['suitable'])
         self.assertTrue(any('resolution' in e for e in r['errors']))
 
-    def test_isf_image_input_declines(self):
-        src = '/*{"INPUTS": [{"NAME": "Img", "TYPE": "image"}]}*/\nvoid main(){}'
-        r = check_suitability(src)
-        self.assertFalse(r['suitable'])
-        self.assertTrue(any('image' in e.lower() for e in r['errors']))
+    def test_image_tex_usage_is_not_declined(self):
+        """ADJUDICATION: a shader sampling `imageTex` is ORDINARY.
 
-    def test_ishadertoy_channel_declines(self):
+        An earlier revision declined these as "image-input, not understood".
+        That was wrong: VS-2 binds the layer's configured image to imageTex,
+        ignores a configured image for shaders that do not sample it, and
+        previews these shaders in the gallery against a default image. The
+        refusal was a gap in our own headless harness (no texture bound), not
+        a property of the shader. Do not re-add a blanket decline without a
+        named failing shader.
+        """
+        r = check_suitability('void main(){ fragColor = texture(imageTex, texCoord); }')
+        self.assertTrue(r['suitable'],
+                        'imageTex wrongly declined: %s' % r['errors'])
+
+    def test_single_ishadertoy_channel_is_not_declined(self):
         src = ('void mainImage(out vec4 f, in vec2 c){'
                ' f = vec4(texture(iChannel0, c / 10.0).rgb, 1.0); }')
         r = check_suitability(src)
-        self.assertFalse(r['suitable'])
-        self.assertTrue(any('image input' in e for e in r['errors']))
+        self.assertTrue(r['suitable'],
+                        'single iChannel wrongly declined: %s' % r['errors'])
 
-    def test_image_tex_usage_declines(self):
-        src = ('void main(){ fragColor = texture(imageTex, texCoord); }')
+    def test_multiple_ishadertoy_channels_still_declines(self):
+        """VS-2 exposes ONE imageTex, so several distinct channels cannot be
+        preserved. That is a real, demonstrable limit, so it still declines."""
+        src = ('void mainImage(out vec4 f, in vec2 c){'
+               ' f = texture(iChannel0, c) * texture(iChannel1, c); }')
         r = check_suitability(src)
-        self.assertFalse(r['suitable'])
-        self.assertTrue(any('imageTex' in e for e in r['errors']))
+        self.assertFalse(r['suitable'], 'multi-channel image input not declined')
+        self.assertTrue(any('iChannel' in e for e in r['errors']))
 
     def test_too_many_params_declines(self):
         params = ', '.join('{"name": "p%d", "default": 0.5}' % i

@@ -85,9 +85,14 @@ def _adapt(source: str) -> str:
         'uniform float alpha;',
         'in vec2 texCoord;',
         'out vec4 fragColor;',
-        '',
-        '// Custom parameters from manifest',
     ]
+    # Image-input shaders need the engine's sampler and its resolution.
+    # VS-2 injects these; declare them only when the body uses them so we do
+    # not trip the "sampler not bound" path on procedural shaders.
+    if 'imageTex' in source:
+        lines += ['uniform sampler2D imageTex;',
+                  'uniform vec2 imageResolution;']
+    lines += ['', '// Custom parameters from manifest']
     for pname in _manifest_params(source):
         lines.append('uniform float %s;' % pname)
     lines += ['', '// Original shader source follows', '']
@@ -151,6 +156,30 @@ def _declares_movement(source: str) -> bool:
     return _manifest(source).get('movement', True) is not False
 
 
+def _load_default_texture(ctx):
+    """Bind a default image for image-input shaders.
+
+    VS-2's gallery renders image-input shaders against a default image, so
+    the headless gate does the same: it is what makes a preview comparable
+    to the app rather than a black frame. Returns None if the asset is
+    missing, in which case the sampler reads the driver's zero texture and
+    the shader takes whatever fallback branch it has.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    import os
+    for rel in ('shader-pipeline/assets/default_texture.png',
+                '../shader-pipeline/assets/default_texture.png'):
+        path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))), rel)
+        if os.path.exists(path):
+            img = Image.open(path).convert('RGBA')
+            return ctx.texture(img.size, 4, img.tobytes())
+    return None
+
+
 def _stats(arr):
     """(mean, std, alpha) over an HxWx4 float array, 0-255 luminance."""
     lum = arr[..., :3].mean(axis=2)
@@ -186,18 +215,6 @@ def run_verification(shader_content: str, shader_name: str) -> dict:
                 "metrics": {}}
 
     try:
-        # Image-input shaders sample `imageTex`, which VS-2 binds to the
-        # layer's image. This gate has no image to bind, so say so plainly
-        # rather than emitting an undeclared-identifier compile error. Not a
-        # pass and not a silent skip - an explicit unsupported verdict.
-        if 'imageTex' in shader_content:
-            return {"passed": False,
-                    "errors": ["image-input shader: `imageTex` needs a bound "
-                               "texture, which this gate does not provide. "
-                               "Verify with shader-pipeline, which binds a "
-                               "test image."],
-                    "metrics": {"unsupported": "image-input"}}
-
         try:
             # Pass sources as strings: compiling the vertex shader to its own
             # object first and then linking it again loses its `out` varying.
@@ -216,6 +233,22 @@ def run_verification(shader_content: str, shader_name: str) -> dict:
         texture = ctx.texture((WIDTH, HEIGHT), 4, dtype='f1')
         fbo = ctx.framebuffer([texture])
         texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+
+        # Image-input shaders sample `imageTex`. VS-2 binds the layer's
+        # configured image to that sampler, and the gallery previews these
+        # shaders against a default image, so binding one here mirrors the
+        # engine. VS-2 reports imageResolution = (0,0) when no image is set,
+        # which is how a shader tells "procedural fallback" from "has image";
+        # we bind a real image, so we report its true size.
+        img_tex = None
+        if 'imageTex' in prog:
+            img_tex = _load_default_texture(ctx)
+            if img_tex is not None:
+                img_tex.use(0)
+                prog['imageTex'].value = 0
+                if 'imageResolution' in prog:
+                    prog['imageResolution'].value = tuple(
+                        float(v) for v in img_tex.size)
 
         param_defaults = _param_values(shader_content)
         animated = _declares_movement(shader_content)

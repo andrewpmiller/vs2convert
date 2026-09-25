@@ -6,7 +6,11 @@ parameter remapping, builtin renames) -> output-pattern rewrite -> precision blo
 -> manifest header.
 
 Hard gates (ConversionError): MilkDrop/HLSL, bundled textures, feedback buffers /
-ISF TARGET inputs, iChannel inputs, ISF image inputs.
+ISF TARGET inputs, ISF image inputs, and Shadertoy shaders reading more than
+one distinct iChannel (VS-2 exposes a single imageTex).
+
+A single iChannel0 read is not gated: it renames to `imageTex` per
+formal-spec.md, which VS-2 binds to the layer's configured image.
 
 Manifest knobs are injected by the VS-2 engine as uniforms; body references to
 knob names are valid as-is.
@@ -276,10 +280,24 @@ def _convert_shadertoy(source: str, report: dict) -> tuple:
     body = _strip_uniforms(source)
     body = _strip_consumed_manifests(body)
 
-    if re.search(r'\biChannel[0-3]\b', body):
+    # formal-spec.md: `iChannel0..3` maps to `imageTex`. VS-2 binds the
+    # layer's configured image there, and ignores a configured image for
+    # shaders that do not sample it. So a single-channel read is an ordinary
+    # image-input shader, not something to refuse.
+    _channels = sorted(set(re.findall(r'\biChannel([0-3])\b', body)))
+    if len(_channels) > 1:
         raise ConversionError(
-            "iChannel texture input: image-input conversion is not automated; "
-            "convert by hand via the vs2-shader-expert skill")
+            "reads %d distinct iChannels (iChannel%s): VS-2 exposes a single "
+            "imageTex, so the channels cannot be preserved. Convert by hand "
+            "via the vs2-shader-expert skill"
+            % (len(_channels), ''.join(_channels)))
+    if _channels:
+        # iChannelN is a sampler; N is a texture unit, not a value.
+        body = re.sub(r'\btexture\s*\(\s*iChannel[0-3]\b', 'texture(imageTex', body)
+        body = re.sub(r'\biChannel[0-3]\b', 'imageTex', body)
+        report['warnings'].append(
+            "iChannel%s -> imageTex (VS-2 binds the layer image there; the "
+            "shader needs an image set in VS-2 to show anything)" % _channels[0])
     body = re.sub(r'\biResolution\b', 'resolution', body)
     body = re.sub(r'\biTime\b', 'time', body)
     if re.search(r'\biMouse\b', body):

@@ -156,12 +156,15 @@ MUTATIONS = [
              'that hole.'),
     ),
     Mutation(
-        name='detector: drop the image-input decline',
+        name='detector: decline any iChannel again',
         path='core/detector.py',
-        find="if re.search(r'\\biChannel[0-3]\\b', code):",
-        replace='if False:',
+        find="    if len(_channels_used) > 1:",
+        replace="    if len(_channels_used) >= 1:",
         selector='test_validator.SuitabilityGateTests',
-        why='MVP requires image-input shaders to be declined.',
+        why=('Reinstates the blanket image-input decline. VS-2 binds the '
+             'layer image to imageTex and previews these shaders in the '
+             'gallery, so a single-channel image shader converts fine - '
+             'verified end to end, render gate included.'),
     ),
     Mutation(
         name='detector: check HLSL in comments too',

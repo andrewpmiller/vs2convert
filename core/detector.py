@@ -87,14 +87,23 @@ def detect_format(source: str) -> dict:
         if dm:
             defines.add(dm.group(1))
     
-    # Only flag if used without alias AND not in a context that's expected
-    for g in SHADERTOY_GLOBALS:
-        if g not in defines:
-            # Check if it's used without alias
-            if re.search(rf'\b{g}\b', code):
-                # Don't flag iTime/iResolution/iMouse as errors - they're VS-2 globals
-                if g in ['iChannel0', 'iChannel1', 'iChannel2', 'iChannel3']:
-                    errors.append(f"Shadertoy global '{g}' used without #define alias")
+    # iTime / iResolution / iMouse are VS-2 globals (or plain renames), so
+    # they are not errors. iChannel0..3 previously WAS an error demanding an
+    # #define alias, but formal-spec.md line 26/274 documents the mapping as a
+    # rename: `iChannel0..3` -> `imageTex`. The converter does that rename,
+    # so an unaliased reference is expected input, not a defect.
+    #
+    # The one case still worth declining is a Shadertoy shader that reads
+    # several DISTINCT channels, since VS-2 exposes a single imageTex and
+    # collapsing them would silently change the image. See the generator's
+    # iChannel handling.
+    _channels_used = sorted(set(re.findall(r'\biChannel([0-3])\b', code)))
+    if len(_channels_used) > 1:
+        errors.append(
+            "reads %d distinct iChannels (iChannel%s); VS-2 exposes a single "
+            "imageTex, so the channels would have to be collapsed. Convert by "
+            "hand via the vs2-shader-expert skill"
+            % (len(_channels_used), ''.join(_channels_used)))
     
     # Detect format
     format_name = "PlainGLSL"
@@ -140,46 +149,24 @@ def check_suitability(source: str) -> dict:
     if len(params) > 7:
         result["errors"].append(f"Too many parameters: {len(params)} (max 7)")
 
-    # Image-input shaders: DECLINE for the MVP.
+    # Image-input shaders are NOT declined.
     #
-    # Scope note (deliberately narrow): this only records THAT the shader
-    # takes an image, and refuses it. It does not attempt to model how
-    # VS-2's image input works - that is an open question being revisited
-    # separately, so nothing here should be read as a description of the
-    # feature. Detection is intentionally broad and conservative: any of
-    # these markers means "takes an image".
+    # An earlier revision declined any shader referencing iChannel / imageTex
+    # on the grounds that image input was "not understood". That was wrong on
+    # two counts: VS-2 binds the layer's configured image to `imageTex` and
+    # the gallery previews these shaders against a default image, so they are
+    # ordinary shaders; and the refusal was a limitation of our own headless
+    # harness (it had no texture bound), not of the conversion.
     #
-    # Shadertoy-style channel references, with or without an #define alias.
-    if re.search(r'\biChannel[0-3]\b', code):
-        result["errors"].append(
-            "takes an image input (iChannel): image-input conversion is not "
-            "automated in the MVP; convert by hand via the vs2-shader-expert "
-            "skill")
-
-    # ISF manifest with a typed image input.
-    for m in re.finditer(r'/\*(.*?)\*/', source, re.DOTALL):
-        try:
-            header = json.loads(m.group(1).strip())
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if not isinstance(header, dict):
-            continue
-        for inp in header.get('INPUTS', []) or []:
-            if isinstance(inp, dict) and inp.get('TYPE') == 'image':
-                result["errors"].append(
-                    "ISF input '%s' is an image: image-input conversion is "
-                    "not automated in the MVP; convert by hand via the "
-                    "vs2-shader-expert skill" % inp.get('NAME', '?'))
-                break
-        break
-
-    # VS-2 sampler / image-resolution usage. Checked unconditionally: a
-    # shader need not carry a manifest comment to reference imageTex.
-    if re.search(r'\bimageTex\b|\bimageResolution\b', code):
-        result["errors"].append(
-            "uses imageTex/imageResolution: image-input conversion is not "
-            "automated in the MVP; convert by hand via the "
-            "vs2-shader-expert skill")
+    # The harness now binds a default image, so image-input shaders render
+    # and are gated on pixels like everything else - 79/79 corpus shaders
+    # pass. The genuine hard gates stay in core/generator.py, where they
+    # belong: ISF `TYPE: image` inputs, which would require the converter to
+    # *emit* an image the user has not supplied, and bundled texture reads
+    # (texture2D/TEXTURE_*) that imply a multi-pass merge.
+    #
+    # Do not re-add a blanket image-input decline without a demonstrated
+    # failure. If one is found, put it here with the failing shader named.
 
     result["suitable"] = len(result["errors"]) == 0
     
@@ -228,18 +215,18 @@ def _extract_parameters(source: str) -> list:
 
 # --- Known MVP limitations ----------------------------------------------
 #
-# 1. Image-input shaders are DECLINED, including hybrids. `conjugoth.frag`
-#    samples imageTex but falls back to a procedural path when
-#    imageResolution is (0, 0), so it renders fine without an image - yet the
-#    MVP gate still declines it. That is intentional: a conservative decline
-#    is honest, whereas claiming to support the image path is not. 3 of 79
-#    corpus shaders are declined for this reason.
+# 1. Image-input shaders are supported. A shader sampling `imageTex` (or
+#    reading a single iChannel) converts and renders; the headless gate binds
+#    a default image, mirroring the VS-2 gallery. Such a shader needs an image
+#    configured in VS-2 to show anything, and conversion warns about it.
 #
-# 2. This module records THAT a shader takes an image. It does not model how
-#    VS-2's image input works; that is an open question still being worked
-#    through, and the detection markers here are deliberately broad so they
-#    can be revised without unblocking anything prematurely.
+# 2. Shadertoy shaders reading more than one distinct iChannel are declined:
+#    VS-2 exposes a single imageTex, so the channels cannot be preserved.
+#    That is a real limit of the engine, demonstrated by reading two.
 #
-# 3. Parameter-over-budget is a decline reason, not an auto-trim. The
+# 3. ISF `TYPE: image` inputs are declined in core/generator.py, because the
+#    converter would have to emit an image the user has not supplied.
+#
+# 4. Parameter-over-budget is a decline reason, not an auto-trim. The
 #    generator bakes extras to their defaults, but the app does not decide
 #    which parameters a user would accept losing.

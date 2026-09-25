@@ -224,11 +224,35 @@ class HardGateTests(unittest.TestCase):
         with self.assertRaises(ConversionError):
             convert('void main(){ float x = frac(1.0); }', 'PlainGLSL', 'p')
 
-    def test_ichannel_rejected(self):
+    def test_single_ichannel_renames_to_image_tex(self):
+        """A single iChannel0 read is an ordinary image-input shader, not a
+        hard gate.
+
+        An earlier revision raised ConversionError here on the premise that
+        image input was "not understood". formal-spec.md documents the
+        mapping as a rename (iChannel0..3 -> imageTex), VS-2 binds the layer's
+        configured image there, and the gallery previews such shaders against
+        a default image. Converted output must sample imageTex and carry a
+        warning that the shader needs an image set in VS-2.
+        """
         src = SHADERTOY.replace('fragColor = vec4(color, 1.0);',
                                 'fragColor = texture(iChannel0, uv);')
-        with self.assertRaises(ConversionError):
+        report = convert(src, 'Shadertoy', 'p')
+        frag = report['frag']
+        self.assertIn('imageTex', frag)
+        self.assertNotRegex(frag, r'\biChannel[0-3]\b')
+        self.assertTrue(any('imageTex' in w for w in report['warnings']),
+                        'must warn that an image is required in VS-2')
+
+    def test_multiple_channels_rejected(self):
+        """VS-2 exposes a single imageTex, so reading two distinct channels
+        cannot be preserved. This is a real limit and stays a hard gate."""
+        src = SHADERTOY.replace('fragColor = vec4(color, 1.0);',
+                                'fragColor = texture(iChannel0, uv) '
+                                '* texture(iChannel1, uv);')
+        with self.assertRaises(ConversionError) as ctx:
             convert(src, 'Shadertoy', 'p')
+        self.assertIn('iChannel', str(ctx.exception))
 
 
 if __name__ == '__main__':
