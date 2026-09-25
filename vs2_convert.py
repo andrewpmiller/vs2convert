@@ -104,7 +104,7 @@ Options:
     # Convert
     print("[info] Converting...")
     try:
-        report = convert(source, fmt, source_path.stem)
+        report = convert(source, fmt, source_path.stem, force=args.force)
     except ConversionError as exc:
         print(f"[error] {exc}")
         sys.exit(1)
@@ -117,11 +117,14 @@ Options:
     full_content = report["frag"]
 
 
-    # Determine output path
+    # Output path. Per design decision 2 (PRD §8): the converted file goes in
+    # the SAME directory as the input, named after the input stem with a .frag
+    # extension - so converting `shaders/sample-isf.fs` leaves both files side
+    # by side in `shaders/`. An explicit second argument still wins.
     if args.output:
         output_path = Path(args.output)
     else:
-        output_path = Path(f"converted_{source_path.stem}.frag")
+        output_path = source_path.with_suffix('.frag')
 
     # Structural validation (D2 fix: always initialized)
     validation_result = {"errors": [], "warnings": []}
@@ -172,8 +175,21 @@ Options:
         print("")
         print(f"[info] Would save to: {output_path}")
     else:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(full_content, encoding="utf-8")
+        # Do NOT mkdir -p: inventing a directory tree the user did not name
+        # and then reporting success hides typos in the output path. Create
+        # the parent only if it is exactly one level away and clearly
+        # intended; otherwise fail loudly.
+        if not output_path.parent.exists():
+            print(f"[error] Output directory does not exist: "
+                  f"{output_path.parent}")
+            print("[error] Nothing was written. Fix the path, or pass a "
+                  "filename (not a path) to save beside the input.")
+            sys.exit(4)
+        try:
+            output_path.write_text(full_content, encoding="utf-8")
+        except OSError as e:
+            print(f"[error] Could not write {output_path}: {e}")
+            sys.exit(4)
         print(f"[info] Saved to: {output_path}")
 
     # Summary

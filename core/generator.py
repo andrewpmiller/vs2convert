@@ -554,7 +554,25 @@ def _convert_isf(source: str, report: dict) -> tuple:
 # public API
 # ---------------------------------------------------------------------------
 
-def convert(source: str, fmt: str, shader_name: str) -> dict:
+def _forced_fallback(source: str, report: dict) -> tuple:
+    """Best-effort body when --force overrides a hard gate.
+
+    Deliberately minimal and honest: strip uniforms, do the mechanical
+    builtin renames, and hand the result over marked as forced. It does NOT
+    try to be clever, because a forced conversion is a starting point for a
+    human, not a working shader.
+    """
+    body = _strip_uniforms(source)
+    body = re.sub(r'\biResolution\b', 'resolution', body)
+    body = re.sub(r'\biTime\b', 'time', body)
+    body = re.sub(r'\biChannel[0-3]\b', 'imageTex', body)
+    body = re.sub(r'\bgl_FragColor\b', 'fragColor', body)
+    body = re.sub(r'\btexture2D\s*\(', 'texture(', body)
+    return body, []
+
+
+def convert(source: str, fmt: str, shader_name: str,
+             force: bool = False) -> dict:
     """Convert source shader to a complete VS-2 .frag string.
 
     Returns {'frag': str, 'warnings': [..], 'baked': [..], 'params': [..]}.
@@ -578,7 +596,20 @@ def convert(source: str, fmt: str, shader_name: str) -> dict:
     if fmt not in fmt_map:
         raise ConversionError(f"unsupported format: {fmt}")
 
-    body, params = fmt_map[fmt](source, report)
+    try:
+        body, params = fmt_map[fmt](source, report)
+    except ConversionError:
+        # --force means "convert anyway", so a capability gate that the user
+        # has explicitly overridden must not abort the run. The result is
+        # reported as such and is very likely broken; the render gate is the
+        # only real check.
+        if not force:
+            raise
+        report['warnings'].append(
+            "FORCED past a hard conversion gate: the output is very likely "
+            "broken. Treat it as a starting point for a manual conversion, "
+            "not as a working shader.")
+        body, params = _forced_fallback(source, report)
     manifest = _build_manifest(params, shader_name)
     report['params'] = params
     report['frag'] = manifest + body
