@@ -224,8 +224,14 @@ def _extract_parameters(source: str) -> list:
 #    VS-2 exposes a single imageTex, so the channels cannot be preserved.
 #    That is a real limit of the engine, demonstrated by reading two.
 #
-# 3. ISF `TYPE: image` inputs are declined in core/generator.py, because the
-#    converter would have to emit an image the user has not supplied.
+# 3. ISF `TYPE: image` inputs convert. An earlier revision declined them,
+#    claiming the converter "would have to emit an image the user hasn't
+#    supplied" - which was wrong twice over: the input is the shader declaring
+#    that it REQUIRES an image (the same role as an iChannel0 read), and VS-2
+#    satisfies it from the layer's configured image. No image is emitted, so
+#    none needs supplying. A source that instead EMBEDS pixel data
+#    (IMG_NORM_PIXEL(TEXTURE_0), TEXTURE_* macros) is a different case and
+#    remains gated: there is genuinely nothing for VS-2 to sample.
 #
 # 4. Parameter-over-budget is a decline reason, not an auto-trim. The
 #    generator bakes extras to their defaults, but the app does not decide

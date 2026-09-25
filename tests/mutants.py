@@ -176,4 +176,26 @@ MUTATIONS = [
              'origin as "original: lerp(...)" in a comment, and scanning raw '
              'text declines a valid shader.'),
     ),
+
+    # ---- generator: the ISF image-input path ---------------------------
+    Mutation(
+        name='generator: reject ISF image inputs again',
+        path='core/generator.py',
+        find="        if itype == 'image':",
+        replace="        if itype == 'image':\n            raise ConversionError('nope')",
+        selector='test_engine.HardGateTests',
+        why=('Reinstates the wrong claim that the converter "would have to '
+             'emit an image the user has not supplied". A TYPE:image input is '
+             'the shader declaring it REQUIRES an image; VS-2 binds the layer '
+             'image to imageTex. Nothing is emitted.'),
+    ),
+    Mutation(
+        name='generator: put the image input in the manifest',
+        path='core/generator.py',
+        find="            seen_image = True\n            continue",
+        replace="            clean = _snake(name)\n            manifest.append({'name': clean, 'default': 0.0})",
+        selector='test_engine.HardGateTests',
+        why=('formal-spec.md: "No image parameter is declared in the manifest. '
+             'The image is implicit." An image is not a knob.'),
+    ),
 ]

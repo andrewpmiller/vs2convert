@@ -6,11 +6,13 @@ parameter remapping, builtin renames) -> output-pattern rewrite -> precision blo
 -> manifest header.
 
 Hard gates (ConversionError): MilkDrop/HLSL, bundled textures, feedback buffers /
-ISF TARGET inputs, ISF image inputs, and Shadertoy shaders reading more than
-one distinct iChannel (VS-2 exposes a single imageTex).
+ISF TARGET inputs, and Shadertoy shaders reading more than one distinct
+iChannel (VS-2 exposes a single imageTex).
 
-A single iChannel0 read is not gated: it renames to `imageTex` per
-formal-spec.md, which VS-2 binds to the layer's configured image.
+Image inputs are NOT gated. A single iChannel0 read, or an ISF
+`TYPE: image` input, renames to `imageTex` per formal-spec.md, which VS-2
+binds from the layer's configured image. The image is implicit: no manifest
+parameter is created for it.
 
 Manifest knobs are injected by the VS-2 engine as uniforms; body references to
 knob names are valid as-is.
@@ -403,14 +405,29 @@ def _convert_isf(source: str, report: dict) -> tuple:
     manifest = []
     baked = {}
     used_names = set()
+    seen_image = False
     for inp in inputs:
         name = inp.get('NAME', '')
         itype = inp.get('TYPE', 'float')
         default = inp.get('DEFAULT', 0.0)
         if itype == 'image':
-            raise ConversionError(
-                f"ISF image input '{name}': image-input conversion is not "
-                f"automated; convert by hand via the vs2-shader-expert skill")
+            # An ISF `TYPE: image` input is not an image the converter has to
+            # supply. It is the shader declaring that it REQUIRES an image -
+            # the same role as a Shadertoy iChannel0 read. VS-2 satisfies it
+            # from the layer's configured image via `imageTex`, and ignores a
+            # configured image for shaders that do not sample one.
+            #
+            # So: do not turn it into a manifest parameter (formal-spec.md:
+            # "No image parameter is declared in the manifest. The image is
+            # implicit."), and do not reject it. The body samples whatever
+            # sampler the source used; rename to imageTex so it resolves
+            # against the engine's binding.
+            report['warnings'].append(
+                f"input '{name}' is an image: the converted shader samples "
+                f"imageTex, which VS-2 binds from the image configured on the "
+                f"layer. It needs an image set in VS-2 to show anything.")
+            seen_image = True
+            continue
         clean = _snake(name)
         while clean in used_names or clean in ENGINE_VARS:
             clean += '_amt'
@@ -457,6 +474,15 @@ def _convert_isf(source: str, report: dict) -> tuple:
                          '_lo': lo, '_hi': hi, '_orig': name})
         used_names.add(clean)
         baked[name] = None  # marker: kept as knob
+
+    # An ISF that declares an image input almost certainly samples a sampler.
+    # ISF spells the sampler as `sampler_main`/`sampler_image`/`sampler`, or
+    # uses an image uniform directly; all of them become the engine's
+    # imageTex, which VS-2 binds from the layer's configured image.
+    if seen_image:
+        body = re.sub(r'\bsampler2D\s+(\w+)\b', 'sampler2D imageTex', body)
+        body = re.sub(r'\btexture2D\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
+        body = re.sub(r'\btexture\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
 
     # --- ISF builtins ---
     if re.search(r'\bPASSINDEX\b', body):

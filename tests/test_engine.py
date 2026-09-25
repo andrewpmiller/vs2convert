@@ -65,10 +65,29 @@ void main() {
 }
 """
 
+# A declared image INPUT: the shader says it requires an image. VS-2 satisfies
+# this from the layer's configured image via imageTex, so it must convert.
 ISF_IMAGE = """/*{
- "INPUTS": [{"NAME": "img", "TYPE": "image"}]
+ "INPUTS": [{"NAME": "img", "TYPE": "image"},
+            {"NAME": "Zoom", "TYPE": "float", "DEFAULT": 0.5,
+             "MIN": 0.0, "MAX": 1.0}]
 }*/
-void main() { gl_FragColor = IMG_NORM_PIXEL(img, isf_FragNormCoord); }
+uniform sampler2D img;
+void main() {
+    vec2 uv = gl_FragCoord.xy / RENDERSIZE.xy;
+    vec3 c = texture(img, uv * (0.5 + Zoom)).rgb;
+    gl_FragColor = vec4(c, 1.0);
+}
+"""
+
+# A BUNDLED texture: the source embeds pixel data (TEXTURE_0), so there is no
+# image for VS-2 to bind and nothing to sample. Still a hard gate. Note this is
+# NOT the same as IMG_NORM_PIXEL(img, ...) which names a declared input.
+ISF_BUNDLED_TEXTURE = """/*{
+ "INPUTS": [{"NAME": "Zoom", "TYPE": "float", "DEFAULT": 0.5,
+             "MIN": 0.0, "MAX": 1.0}]
+}*/
+void main() { gl_FragColor = IMG_NORM_PIXEL(TEXTURE_0, isf_FragNormCoord); }
 """
 
 
@@ -215,10 +234,38 @@ class HardGateTests(unittest.TestCase):
             convert(ISF_FEEDBACK, 'ISF', 'probe')
         self.assertIn('feedback', str(ctx.exception))
 
-    def test_image_input_rejected(self):
+    def test_declared_image_input_converts_to_image_tex(self):
+        """An ISF `TYPE: image` input is NOT an image to be emitted.
+
+        An earlier revision rejected these, claiming the converter "would have
+        to emit an image the user hasn't supplied". That was wrong: the input
+        is the shader declaring that it REQUIRES an image, the same role as a
+        Shadertoy iChannel0 read. VS-2 binds the layer's configured image to
+        imageTex, and ignores a configured image for shaders that don't sample
+        it. Nothing is emitted, so nothing needs supplying.
+
+        formal-spec.md: "No image parameter is declared in the manifest. The
+        image is implicit."
+        """
+        result = convert(ISF_IMAGE, 'ISF', 'probe')
+        frag = result['frag']
+        # the sampler resolves against the engine's binding
+        self.assertIn('texture(imageTex', frag)
+        # and the image input never becomes a manifest knob
+        names = [p['name'] for p in result['params']]
+        self.assertNotIn('img', names)
+        self.assertIn('zoom', names)
+        # the user is told it needs an image configured in VS-2
+        self.assertTrue(any('image' in w and 'VS-2' in w
+                            for w in result['warnings']),
+                        'must warn that an image is required in VS-2')
+
+    def test_bundled_texture_still_rejected(self):
+        """Distinct case: a source that embeds pixels has no image for VS-2 to
+        bind, so the bundled-texture gate still applies."""
         with self.assertRaises(ConversionError) as ctx:
-            convert(ISF_IMAGE, 'ISF', 'probe')
-        self.assertIn('image', str(ctx.exception))
+            convert(ISF_BUNDLED_TEXTURE, 'ISF', 'probe')
+        self.assertIn('texture', str(ctx.exception).lower())
 
     def test_hlsl_rejected(self):
         with self.assertRaises(ConversionError):
