@@ -96,23 +96,36 @@ GATES = [
         module='core/generator.py',
     ),
     Gate(
-        id='isf-bundled-texture',
-        trigger='texture2D()/tex2D() or IMG_NORM_PIXEL(TEXTURE_*, ...)',
-        reason='bundled texture input (TEXTURE_*): hard gate; convert by '
-               'hand via the vs2-shader-expert skill',
+        id='isf-imported-resources',
+        trigger='top-level "IMPORTED" dict in the ISF JSON (e.g. a PATH)',
+        reason='bundled image resources in IMPORTED',
         evidence=(
-            'formal-spec.md:185 - sampling is texture(imageTex, uv), NOT '
-            'texture2D. A bundled texture is pixel data compiled into the '
-            'source, so there is nothing for VS-2 to bind. The gate regex '
-            'requires the TEXTURE_ prefix to avoid catching '
-            'IMG_NORM_PIXEL(img, ...), which names a declared input - a '
-            'distinction a test fixture previously got wrong.'
+            'docs.isf.video/ref_json and the canonical Test-ImportedImage.fs '
+            'example: bundled images are declared under a top-level IMPORTED '
+            'key with a PATH per entry, and read through the same IMG_* '
+            'accessors as host-supplied images. They are files travelling '
+            'with the .fs; VS-2 has nowhere to put them. An earlier version '
+            'of this gate invented a TEXTURE_* macro concept that does not '
+            'exist in ISF, and so fired on nothing real.'
         ),
         allows=(
-            'IMG_NORM_PIXEL(img, ...) - a named image input - converts. This '
-            'distinction was previously conflated in a test fixture, which '
-            'asserted a rejection the gate never performed.'
+            'An INPUTS entry of TYPE "image" with NO IMPORTED block converts: '
+            'that is a host-supplied image, which VS-2 binds to imageTex. '
+            'docs.isf.video primer ch.4 and ref_json both use '
+            'IMG_NORM_PIXEL(inputImage, isf_FragNormCoord) for this case.'
         ),
+        module='core/generator.py',
+    ),
+    Gate(
+        id='glsl-texture2d',
+        trigger='texture2D() or tex2D() call',
+        reason='bundled texture input (texture2D/tex2D): hard gate',
+        evidence=(
+            'formal-spec.md:185 - sampling is texture(imageTex, uv), NOT '
+            'texture2D. Distinct from an ISF image INPUT, which uses the '
+            'IMG_* accessors.'
+        ),
+        allows='An ISF image input sampled via IMG_NORM_PIXEL converts.',
         module='core/generator.py',
     ),
     Gate(
@@ -123,7 +136,14 @@ GATES = [
                'skill',
         evidence=(
             'formal-spec.md:26 and :274 - iChannel0..3 map to imageTex, a '
-            'SINGLE sampler. Two distinct channels have no faithful target.'
+            'SINGLE sampler. Two distinct channels have no faithful target. '
+            'Researched 2026-09-25: a Shadertoy iChannel is a binding SLOT, '
+            'not a known image - it may hold a texture, feedback buffer, '
+            'cubemap, video, keyboard or audio, and "iChannel0 does not '
+            'always mean the main texture" (shadergif Shadertoy uniform '
+            'reference, and Shadertoy own guidance to inspect the pass '
+            'configuration). Which one it is lives on the shader page, not in '
+            'the .txt.'
         ),
         allows=(
             'A single iChannel0 read converts, renaming to imageTex per '
@@ -148,6 +168,30 @@ GATES = [
             'PASSINDEX alone (no buffer/feedback refs) is NOT this gate: the '
             'converter projects the source onto its final pass. Only a body '
             'that samples a feedback buffer is refused.'
+        ),
+        module='core/generator.py',
+    ),
+    Gate(
+        id='shadertoy-channel-uncertainty',
+        trigger='a single iChannelN read, mapped to imageTex without evidence',
+        reason='UNVERIFIED: iChannel',
+        evidence=(
+            'NOT a refusal - a disclosure. A Shadertoy iChannel is a binding '
+            'slot that may hold a texture, feedback buffer, cubemap, video, '
+            'keyboard or audio data; the pass configuration lives on the '
+            'Shadertoy page, so it cannot be determined from source. Refusing '
+            'every channel shader would block the common legitimate case (one '
+            'user image), and converting silently would let a wrong guess read '
+            'as verified. So it converts, and says so loudly: the conversion '
+            'is marked UNVERIFIED, the CLI prints a dedicated [unverified] '
+            'block, and --strict exits 5. Per gates.py this is the kind of '
+            'unverifiable claim that must be visible rather than assumed.'
+        ),
+        allows=(
+            'A shader that samples imageTex directly (a converted VS-2 file '
+            're-converted) is never flagged. iChannelResolution/iChannelTime '
+            'references additionally warn, since those describe the bound '
+            'slot and have no VS-2 equivalent.'
         ),
         module='core/generator.py',
     ),

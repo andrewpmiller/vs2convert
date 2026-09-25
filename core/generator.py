@@ -289,6 +289,7 @@ def _convert_shadertoy(source: str, report: dict) -> tuple:
     # shaders that do not sample it. So a single-channel read is an ordinary
     # image-input shader, not something to refuse.
     _channels = sorted(set(re.findall(r'\biChannel([0-3])\b', body)))
+    _chan_meta = sorted(set(re.findall(r'\biChannel(?:Resolution|Time)\b', body)))
     if len(_channels) > 1:
         raise ConversionError(
             "reads %d distinct iChannels (iChannel%s): VS-2 exposes a single "
@@ -296,12 +297,38 @@ def _convert_shadertoy(source: str, report: dict) -> tuple:
             "via the vs2-shader-expert skill"
             % (len(_channels), ''.join(_channels)))
     if _channels:
-        # iChannelN is a sampler; N is a texture unit, not a value.
+        # SAFETY: a Shadertoy iChannel is a binding SLOT, not a known image.
+        # Per Shadertoy's own model it may hold a texture, a feedback buffer,
+        # a cubemap, a video source, keyboard data, or an audio input, and
+        # "iChannel0 does not always mean the main texture" - it means whatever
+        # the pass configuration attached to slot 0. The pass configuration
+        # lives on the Shadertoy page, not in the .txt, so from source alone
+        # we cannot know. Mapping an unknown slot onto VS-2's single imageTex
+        # is therefore a GUESS, and a wrong guess produces a shader that
+        # renders but is not the original.
+        #
+        # So: the conversion is allowed to proceed, because refusing every
+        # channel shader would block the common and legitimate case of a
+        # single user-supplied image, but the uncertainty is stated loudly and
+        # the output is marked so it cannot be mistaken for a verified
+        # conversion. See gates.py:shadertoy-channel-uncertainty.
+        _slot = _channels[0]
+        report['warnings'].append(
+            "UNVERIFIED: iChannel%s is a Shadertoy binding slot, not a "
+            "guaranteed image - it may be a feedback buffer, cubemap, video, "
+            "or audio. Mapped to VS-2's imageTex, which binds the image set on "
+            "the layer. Confirm against the Shadertoy page's pass settings "
+            "that slot %s really is a single user image; if not, this "
+            "conversion is wrong and needs doing by hand." % (_slot, _slot))
+        if _chan_meta:
+            report['warnings'].append(
+                "iChannelResolution/iChannelTime referenced: these describe "
+                "the bound slot and have no VS-2 equivalent. Any scaling or "
+                "sync built on them is not preserved.")
         body = re.sub(r'\btexture\s*\(\s*iChannel[0-3]\b', 'texture(imageTex', body)
         body = re.sub(r'\biChannel[0-3]\b', 'imageTex', body)
-        report['warnings'].append(
-            "iChannel%s -> imageTex (VS-2 binds the layer image there; the "
-            "shader needs an image set in VS-2 to show anything)" % _channels[0])
+        body = re.sub(r'\biChannelResolution\b', 'imageResolution', body)
+        body = re.sub(r'\biChannelTime\b', 'time', body)
     body = re.sub(r'\biResolution\b', 'resolution', body)
     body = re.sub(r'\biTime\b', 'time', body)
     if re.search(r'\biMouse\b', body):
@@ -394,11 +421,26 @@ def _convert_isf(source: str, report: dict) -> tuple:
         raise ConversionError(
             "feedback buffer (ISF TARGET input/pass): VS-2 is single-pass "
             "with no feedback; convert by hand via the vs2-shader-expert skill")
-    if re.search(r'\btexture2D\s*\(|\btex2D\s*\(|IMG_NORM_PIXEL\s*\(\s*TEXTURE',
-                 source):
+    # BUNDLED image resources: a top-level "IMPORTED" dict naming files the
+    # composition ships with, e.g. {"blendImage": {"PATH": "Hexagon.tiff"}}.
+    # Per docs.isf.video/ref_json and the canonical Test-ImportedImage.fs.
+    # These are pixel data travelling with the .fs; VS-2 has no equivalent,
+    # so refuse rather than silently drop the blend.
+    _imported = header_all.get('IMPORTED') if isinstance(header_all, dict) else None
+    if _imported:
+        _names = ', '.join(sorted(_imported)[:4])
         raise ConversionError(
-            "bundled texture input (TEXTURE_*): hard gate; convert by hand "
-            "via the vs2-shader-expert skill")
+            f"bundled image resources in IMPORTED ({_names}): these are image "
+            f"files shipped with the .fs, and VS-2 has nowhere to put them. "
+            f"Supply the image in VS-2 instead, or convert by hand via the "
+            f"vs2-shader-expert skill")
+
+    # Non-ISF GLSL texture calls. Genuinely unrepresentable: these imply a
+    # multi-pass merge, which VS-2 does not have.
+    if re.search(r'\btexture2D\s*\(|\btex2D\s*\(', source):
+        raise ConversionError(
+            "bundled texture input (texture2D/tex2D): hard gate; convert by "
+            "hand via the vs2-shader-expert skill")
 
     body = source[m.end():] if m else source
     body = _strip_uniforms(body)
@@ -482,7 +524,14 @@ def _convert_isf(source: str, report: dict) -> tuple:
     # uses an image uniform directly; all of them become the engine's
     # imageTex, which VS-2 binds from the layer's configured image.
     if seen_image:
-        body = re.sub(r'\bsampler2D\s+(\w+)\b', 'sampler2D imageTex', body)
+        # ISF image accessors (docs.isf.video/ref_json): IMG_NORM_PIXEL(name, uv)
+        # and IMG_THIS_PIXEL(name) read the image named in INPUTS. VS-2 exposes a
+        # single sampler, imageTex, so every one of these becomes a texture()
+        # call against it. Leaving them in would emit a shader that cannot
+        # compile - these are ISF host functions, not GLSL.
+        body = re.sub(r'\bIMG_NORM_PIXEL\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
+        body = re.sub(r'\bIMG_THIS_PIXEL\s*\(\s*\w+\s*\)', 'texture(imageTex, texCoord)', body)
+        body = re.sub(r'\bIMG_PIXEL\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
         body = re.sub(r'\btexture2D\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
         body = re.sub(r'\btexture\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
 

@@ -57,11 +57,17 @@ ALLOWED_CASES = {
         '    vec2 uv = gl_FragCoord.xy / RENDERSIZE.xy;\n'
         '    gl_FragColor = vec4(uv * Zoom, 1.0);\n'
         '}\n', 'ISF'),
-    # IMG_NORM_PIXEL(img, ...) names a declared input, not a bundled texture
-    'isf-bundled-texture': lambda: not _raises_on(
+    # An ISF image input with no IMPORTED block is host-supplied: converts.
+    # This is the canonical docs.isf.video/ref_json example.
+    'isf-imported-resources': lambda: not _raises_on(
+        '/*{"INPUTS": [{"NAME": "inputImage", "TYPE": "image"}]}*/\n'
+        'void main() {\n'
+        '    gl_FragColor = IMG_NORM_PIXEL(inputImage, isf_FragNormCoord);\n'
+        '}\n', 'ISF'),
+    'glsl-texture2d': lambda: not _raises_on(
         '/*{"INPUTS": [{"NAME": "img", "TYPE": "image"}]}*/\n'
-        'uniform sampler2D img;\nvoid main() {\n'
-        '    gl_FragColor = texture(img, gl_FragCoord.xy / 100.0);\n}\n',
+        'void main() {\n'
+        '    gl_FragColor = IMG_NORM_PIXEL(img, isf_FragNormCoord);\n}\n',
         'ISF'),
     # a single iChannel0 read is an ordinary image-input shader
     'shadertoy-multi-channel': lambda: _converts(
@@ -78,6 +84,12 @@ ALLOWED_CASES = {
         '    vec2 uv = gl_FragCoord.xy / RENDERSIZE.xy;\n'
         '    gl_FragColor = vec4(uv * float(pass) * Zoom, 1.0);\n'
         '}\n', 'ISF'),
+    # A shader that samples imageTex directly is never flagged UNVERIFIED.
+    'shadertoy-channel-uncertainty': lambda: not any(
+        w.startswith('UNVERIFIED')
+        for w in convert('void main() {\n'
+                         '    fragColor = texture(imageTex, texCoord);\n'
+                         '}\n', 'PlainGLSL', 'p')['warnings']),
     # a custom uniform is not an engine var
     'engine-var-redeclaration': lambda: check_suitability(
         'uniform float myParam;\n' + MINIMAL_BODY)['suitable'],

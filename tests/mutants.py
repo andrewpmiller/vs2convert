@@ -198,4 +198,35 @@ MUTATIONS = [
         why=('formal-spec.md: "No image parameter is declared in the manifest. '
              'The image is implicit." An image is not a knob.'),
     ),
+
+    # ---- researched ISF / Shadertoy behaviour ------------------------
+    Mutation(
+        name='generator: leave IMG_NORM_PIXEL in the output',
+        path='core/generator.py',
+        find="body = re.sub(r'\\bIMG_NORM_PIXEL\\s*\\(\\s*\\w+\\s*,', 'texture(imageTex,', body)",
+        replace='pass',
+        selector='test_engine.IsfImageSpecTests',
+        why=('ISF host function, not GLSL: the canonical spec shader would '
+             'convert to output that cannot compile, and the converter would '
+             'report success. Found by researching docs.isf.video/ref_json.'),
+    ),
+    Mutation(
+        name='generator: drop the UNVERIFIED disclosure for iChannel',
+        path='core/generator.py',
+        find='            "UNVERIFIED: iChannel%s is a Shadertoy binding slot, not a "',
+        replace='            "iChannel%s -> imageTex. "',
+        selector='test_engine.ShadertoyChannelUncertaintyTests',
+        why=('A Shadertoy iChannel is a binding slot that may hold a buffer, '
+             'cubemap, video or audio - unknowable from source. Converting '
+             'silently would let a wrong guess read as verified.'),
+    ),
+    Mutation(
+        name='generator: allow an ISF IMPORTED bundle through',
+        path='core/generator.py',
+        find='    if _imported:',
+        replace='    if False:',
+        selector='test_engine.IsfImageSpecTests',
+        why=('IMPORTED names image files shipped with the .fs; VS-2 has '
+             'nowhere to put them, so the blend would silently vanish.'),
+    ),
 ]

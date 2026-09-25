@@ -53,6 +53,10 @@ Options:
     parser.add_argument("--dry-run", action="store_true", help="Show what would be generated without writing")
     parser.add_argument("--force", action="store_true",
                         help="Convert even when the suitability gate declines")
+    parser.add_argument("--strict", action="store_true",
+                        help="Exit 5 if the conversion was only UNVERIFIED "
+                             "(e.g. a Shadertoy iChannel whose binding the "
+                             "tool cannot inspect). Use in CI.")
 
     args = parser.parse_args()
 
@@ -111,8 +115,21 @@ Options:
 
     for item in report["baked"]:
         print(f"[baked] {item}")
+    _unverified = [w for w in report["warnings"] if w.startswith("UNVERIFIED")]
     for item in report["warnings"]:
         print(f"[warn] {item}")
+
+    # A conversion the tool cannot vouch for must not read like a clean pass.
+    # The render gate proves the shader RUNS; it cannot prove the source
+    # semantics were preserved, which is what an UNVERIFIED item is about.
+    if _unverified:
+        print()
+        print("[unverified] This conversion rests on an assumption the tool "
+              "could not check:")
+        for item in _unverified:
+            print(f"  - {item}")
+        print("[unverified] Structural and render gates still apply, but they "
+              "cannot detect a wrong assumption. Review by hand.")
 
     full_content = report["frag"]
 
@@ -165,6 +182,11 @@ Options:
             print("[error] --verify was requested but did not execute. "
                   "Treating as FAILED so it cannot be mistaken for a pass.")
             sys.exit(2)
+
+    if args.strict and _unverified:
+        print("[error] --strict: conversion is UNVERIFIED, refusing to "
+              "report success. See the [unverified] block above.")
+        sys.exit(5)
 
     if args.dry_run:
         print("")

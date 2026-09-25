@@ -83,11 +83,14 @@ void main() {
 # A BUNDLED texture: the source embeds pixel data (TEXTURE_0), so there is no
 # image for VS-2 to bind and nothing to sample. Still a hard gate. Note this is
 # NOT the same as IMG_NORM_PIXEL(img, ...) which names a declared input.
+# GLSL texture2D/tex2D is not a VS-2 API (formal-spec.md:185). Not the same
+# thing as an ISF image INPUT, which uses the IMG_* accessors.
 ISF_BUNDLED_TEXTURE = """/*{
  "INPUTS": [{"NAME": "Zoom", "TYPE": "float", "DEFAULT": 0.5,
              "MIN": 0.0, "MAX": 1.0}]
 }*/
-void main() { gl_FragColor = IMG_NORM_PIXEL(TEXTURE_0, isf_FragNormCoord); }
+uniform sampler2D tex;
+void main() { gl_FragColor = texture2D(tex, gl_FragCoord.xy / 100.0); }
 """
 
 
@@ -228,6 +231,109 @@ class ConvertIsfTests(unittest.TestCase):
                            'no knob formula matched - test would be vacuous')
 
 
+ISF_IMPORTED = """/*
+{
+"ISFVSN": "2.0",
+"INPUTS": [ { "NAME": "inputImage", "TYPE": "image" } ],
+"IMPORTED": { "blendImage": { "PATH": "Hexagon.tiff" } }
+}
+*/
+void main()
+{
+vec4 srcPixel = IMG_NORM_PIXEL(inputImage, isf_FragNormCoord);
+vec4 blendPixel = IMG_NORM_PIXEL(blendImage, isf_FragNormCoord);
+gl_FragColor = (srcPixel + blendPixel) / 2.0;
+}
+"""
+
+ISF_IMAGE_INPUT = """/*
+{ "ISFVSN": "2.0",
+  "INPUTS": [ { "NAME": "inputImage", "TYPE": "image" } ] }
+*/
+void main()
+{
+vec4 srcPixel = IMG_NORM_PIXEL(inputImage, isf_FragNormCoord);
+gl_FragColor = vec4(srcPixel.rgb, 1.0);
+}
+"""
+
+
+class IsfImageSpecTests(unittest.TestCase):
+    """ISF image handling, per docs.isf.video/ref_json and the canonical
+    Test-ImportedImage.fs example.
+
+    An earlier gate invented a `TEXTURE_*` macro concept. ISF has no such
+    thing: bundled images are declared under a top-level IMPORTED key with a
+    PATH, and ALL image access - bundled or host-supplied - goes through the
+    IMG_* accessor family. Researched 2026-09-25.
+    """
+
+    def test_imported_bundle_is_refused(self):
+        """IMPORTED means image files ship with the .fs; VS-2 cannot hold them."""
+        with self.assertRaises(ConversionError) as ctx:
+            convert(ISF_IMPORTED, 'ISF', 'p')
+        self.assertIn('IMPORTED', str(ctx.exception))
+
+    def test_img_norm_pixel_never_survives_into_output(self):
+        """The bug this caught: the canonical spec shader converted to output
+        that still called IMG_NORM_PIXEL - an ISF host function, not GLSL.
+        The result would not compile, and the converter reported success."""
+        frag = convert(ISF_IMAGE_INPUT, 'ISF', 'p')['frag']
+        self.assertNotIn('IMG_NORM_PIXEL', frag)
+        self.assertNotIn('IMG_THIS_PIXEL', frag)
+        self.assertIn('texture(imageTex', frag)
+
+    def test_host_supplied_image_input_converts_with_a_warning(self):
+        report = convert(ISF_IMAGE_INPUT, 'ISF', 'p')
+        names = [p['name'] for p in report['params']]
+        self.assertNotIn('inputImage', names,
+                         'the image is implicit, not a manifest knob')
+        self.assertTrue(any('image' in w and 'VS-2' in w
+                            for w in report['warnings']),
+                        'must warn that an image must be set in VS-2')
+
+
+class ShadertoyChannelUncertaintyTests(unittest.TestCase):
+    """A Shadertoy iChannel is a binding SLOT, not a known image.
+
+    It may hold a texture, feedback buffer, cubemap, video, keyboard or audio
+    data, and the pass configuration that decides lives on the Shadertoy page
+    rather than in the .txt. So mapping it to VS-2's imageTex is a guess, and
+    a wrong guess yields a shader that renders but is not the original.
+    """
+
+    SRC = ('void mainImage(out vec4 f, in vec2 c){'
+           ' f = vec4(texture(iChannel0, c / 9.0).rgb, 1.0); }')
+
+    def test_channel_conversion_is_marked_unverified(self):
+        report = convert(self.SRC, 'Shadertoy', 'p')
+        self.assertTrue(any(w.startswith('UNVERIFIED')
+                            for w in report['warnings']),
+                        'a guessed iChannel mapping must be disclosed')
+
+    def test_channel_still_converts(self):
+        """Refusing every channel shader would block the common legitimate
+        case of a single user-supplied image."""
+        frag = convert(self.SRC, 'Shadertoy', 'p')['frag']
+        self.assertIn('imageTex', frag)
+        self.assertNotRegex(frag, r'\biChannel[0-3]\b')
+
+    def test_shader_already_using_image_tex_is_not_flagged(self):
+        report = convert('void main() { fragColor = texture(imageTex, texCoord); }',
+                         'PlainGLSL', 'p')
+        self.assertFalse(any(w.startswith('UNVERIFIED')
+                             for w in report['warnings']))
+
+    def test_channel_metadata_references_warn(self):
+        src = ('void mainImage(out vec4 f, in vec2 c){'
+               ' vec2 s = iChannelResolution[0].xy;'
+               ' f = vec4(texture(iChannel0, c / s).rgb, 1.0); }')
+        report = convert(src, 'Shadertoy', 'p')
+        self.assertTrue(any('iChannelResolution' in w
+                            for w in report['warnings']),
+                        'channel metadata has no VS-2 equivalent and must warn')
+
+
 class HardGateTests(unittest.TestCase):
     def test_feedback_buffer_rejected(self):
         with self.assertRaises(ConversionError) as ctx:
@@ -261,11 +367,15 @@ class HardGateTests(unittest.TestCase):
                         'must warn that an image is required in VS-2')
 
     def test_bundled_texture_still_rejected(self):
-        """Distinct case: a source that embeds pixels has no image for VS-2 to
-        bind, so the bundled-texture gate still applies."""
+        """Distinct case: GLSL texture2D/tex2D is unrepresentable, and an ISF
+        IMPORTED bundle has nowhere to live in VS-2. Both are covered; see
+        IsfImageSpecTests for the researched spec constructs."""
         with self.assertRaises(ConversionError) as ctx:
             convert(ISF_BUNDLED_TEXTURE, 'ISF', 'probe')
         self.assertIn('texture', str(ctx.exception).lower())
+        with self.assertRaises(ConversionError) as ctx2:
+            convert(ISF_IMPORTED, 'ISF', 'probe')
+        self.assertIn('IMPORTED', str(ctx2.exception))
 
     def test_hlsl_rejected(self):
         with self.assertRaises(ConversionError):
