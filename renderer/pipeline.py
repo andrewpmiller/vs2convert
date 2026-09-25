@@ -38,7 +38,16 @@ import re
 # render counts as frozen. Matches shader-pipeline/pipeline.py's floor.
 MIN_MOTION = 1.0
 WIDTH, HEIGHT = 256, 256
+# Motion probe. A single pair of frames 1s apart is the wrong instrument for
+# a shader whose animation is discrete rather than smooth: a per-frame random
+# glitch (real Shadertoy case: the seed is quantised by mytrunc() to 6 levels)
+# renders identically at t=0,1,2 and genuinely animates between them. Sampling
+# 3 far-apart frames called that "frozen" and rejected a working shader.
+# So: WIDE_SAMPLES catch a body that truly ignores time, while DENSE_FRAMES at
+# frame rate catch discrete per-frame animation the wide probe cannot see.
 TIME_SAMPLES = (0.0, 1.0, 2.0)
+DENSE_FRAMES = 60
+DENSE_SPAN = 1.0
 
 # VS-2 emits a GLES-flavoured body (fragColor, #ifdef GL_ES) but the host
 # context is desktop GL, so compile as 330 and let the engine's helpers in.
@@ -256,7 +265,8 @@ def run_verification(shader_content: str, shader_name: str) -> dict:
         metrics['movement'] = animated
 
         frames = []
-        for t in TIME_SAMPLES:
+        for t in list(TIME_SAMPLES) + [i * DENSE_SPAN / DENSE_FRAMES
+                                       for i in range(DENSE_FRAMES)]:
             fbo.use()
             fbo.clear(0.0, 0.0, 0.0, 0.0)
             if 'resolution' in prog:
@@ -279,11 +289,25 @@ def run_verification(shader_content: str, shader_name: str) -> dict:
                 HEIGHT, WIDTH, 4).astype(np.float32)
             frames.append(arr)
 
-        means, stds, alphas = zip(*[_stats(f) for f in frames])
+        # The wide probe uses only the first len(TIME_SAMPLES) frames.
+        wide = frames[:len(TIME_SAMPLES)]
+        dense = frames[len(TIME_SAMPLES):]
+        means, stds, alphas = zip(*[_stats(f) for f in wide])
         mean, std, alpha = max(means), max(stds), max(alphas)
-        lums = [f[..., :3].mean(axis=2) for f in frames]
-        motion = max(float(np.abs(lums[i] - lums[j]).mean())
-                     for i in range(len(lums)) for j in range(i + 1, len(lums)))
+        def _delta(imgs):
+            if len(imgs) < 2:
+                return 0.0
+            lums = [f[..., :3].mean(axis=2) for f in imgs]
+            return max(float(np.abs(lums[i] - lums[j]).mean())
+                       for i in range(len(lums))
+                       for j in range(i + 1, len(lums)))
+
+        wide_motion = _delta(wide)
+        dense_motion = _delta(dense)
+        distinct = len({f.tobytes() for f in dense})
+        # A shader animates if EITHER probe sees change: smooth shaders show it
+        # across wide samples, discrete per-frame ones within the dense run.
+        motion = max(wide_motion, dense_motion)
 
         metrics = {
             "resolution": (WIDTH, HEIGHT),
@@ -292,6 +316,9 @@ def run_verification(shader_content: str, shader_name: str) -> dict:
             "std": round(std, 2),
             "alpha": round(alpha, 2),
             "motion": round(motion, 2),
+            "wide_motion": round(wide_motion, 2),
+            "dense_motion": round(dense_motion, 2),
+            "distinct_dense_frames": distinct,
         }
 
         if mean < 1.0 and alpha < 1.0:
@@ -303,10 +330,22 @@ def run_verification(shader_content: str, shader_name: str) -> dict:
             errors.append("dark: visible but very dim (mean=%.2f)" % mean)
         # Only motion-check shaders that declare movement. A static shader
         # rendering identical frames is correct, not broken.
-        if animated and motion < MIN_MOTION:
-            errors.append("frozen: %d frames rendered but motion=%.2f "
-                          "(floor %.1f) - the body appears to ignore `time`"
-                          % (len(frames), motion, MIN_MOTION))
+        #
+        # Two thresholds, because the two probes measure different things.
+        # A smooth shader drifts in mean luminance between frames 1s apart, so
+        # the wide probe keeps the original 1.0 floor. A discrete per-frame
+        # shader barely moves mean luminance but produces a different image
+        # every frame, so for the dense probe the honest test is whether the
+        # frames are byte-identical - and the floor scales down to match, since
+        # 60 per-frame deltas each contribute 1/60 of the wide average.
+        if animated:
+            if wide_motion < MIN_MOTION and distinct < DENSE_FRAMES:
+                errors.append(
+                    "frozen: neither the wide probe (motion=%.2f < %.1f over "
+                    "%ds) nor the dense probe (%d/%d distinct frames) sees the "
+                    "body change - it appears to ignore `time`"
+                    % (wide_motion, MIN_MOTION, len(wide), distinct,
+                       DENSE_FRAMES))
 
         metrics['gl_version'] = ctx.info.get('GL_VERSION')
         return {"passed": not errors, "errors": errors, "metrics": metrics}

@@ -241,15 +241,86 @@ def _rewrite_output(source: str) -> str:
 
 
 def _rename_shadowed_engine_vars(source: str) -> str:
-    """Rename local declarations that shadow engine vars (color, alpha) so the
-    generated output pattern reaches the engine globals."""
-    for var in ('color', 'alpha'):
-        decl_re = re.compile(
-            r'\b(?:' + '|'.join(GLSL_TYPES) + r')\s+' + var + r'\s*=')
-        if decl_re.search(source):
-            source = re.sub(r'\b' + var + r'\b', 'src' + var.capitalize(),
-                            source)
-    return source
+    """Rename local declarations that shadow an engine uniform, keeping the
+    initializer's reference to the engine value intact.
+
+    Every engine uniform is in scope, not just `color`/`alpha`.
+
+    A real case: Shadertoy
+        float time = mod(iTime*100.0, 32.0)/110.0;
+    becomes, after the iTime->time rename,
+        float time = mod(time*100.0, 32.0)/110.0;
+    which initialises `time` from itself. The shader still compiles and
+    renders - it simply stops animating. Structural validation cannot see
+    that; the render gate's motion check is what catches it.
+
+    The fix renames the LOCAL to `srcTime` and leaves the engine `time` on
+    the right-hand side, so the source's own arithmetic is preserved and the
+    engine uniform stays reachable.
+    """
+    lines = source.split('\n')
+    type_alt = '|'.join(GLSL_TYPES)
+    for var in sorted(ENGINE_VARS):
+        decl = re.compile(
+            r'^(\s*)(' + type_alt + r')\s+' + var + r'\s*=\s*(.*)$')
+        # Rename ONLY when a real shadowing declaration exists. Renaming
+        # unconditionally would rewrite every legitimate engine reference,
+        # including the `imageTex` the iChannel rename just produced.
+        decl_lines = [i for i, l in enumerate(lines) if decl.match(l)]
+        if not decl_lines:
+            continue
+        renamed = 'src' + var[0].upper() + var[1:]
+        for i, line in enumerate(lines):
+            m = decl.match(line)
+            if m:
+                # Declaration: rename the declared name, keep the init as-is.
+                lines[i] = '%s%s %s = %s' % (m.group(1), m.group(2),
+                                             renamed, m.group(3))
+            else:
+                lines[i] = re.sub(r'\b' + var + r'\b', renamed, line)
+    return '\n'.join(lines)
+
+
+def _coalesce_frag_color_writes(body: str) -> str:
+    """Fold `fragColor.a = X; fragColor.rgb = Y;` into one `fragColor = ...`.
+
+    Some sources - a real Shadertoy glitch among them - write the output in
+    two component assignments. That is equivalent GLSL, but the external
+    validator requires a single `fragColor =` (validate_shader.py:156) and
+    every golden VS-2 shader uses one. Left split, a correct conversion
+    reports as a hard error.
+    """
+    if re.search(r'\bfragColor\s*=', body) and not re.search(
+            r'\bfragColor\s*\.\s*[argb]\w*\s*=', body):
+        return body
+    lines = body.split('\n')
+    out, i = [], 0
+    while i < len(lines):
+        m = re.match(r'^(\s*)fragColor\.(\w+)\s*=\s*(.+?);\s*$', lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        indent, comp, expr = m.group(1), m.group(2), m.group(3)
+        comps = {}
+        # Gather consecutive component writes in any order.
+        j = i
+        while j < len(lines):
+            m2 = re.match(r'^(\s*)fragColor\.(\w+)\s*=\s*(.+?);\s*$',
+                          lines[j])
+            if not m2 or m2.group(1) != indent:
+                break
+            comps[m2.group(2)] = m2.group(3)
+            j += 1
+        if set(comps) <= {'rgb', 'a'} and 'rgb' in comps:
+            alpha = comps.get('a', '1.0')
+            out.append('%sfragColor = vec4(%s, %s);' % (indent, comps['rgb'],
+                                                       alpha))
+            i = j
+        else:
+            out.append(lines[i])
+            i += 1
+    return '\n'.join(out)
 
 
 def _build_manifest(params: list, shader_name: str) -> str:
@@ -276,6 +347,9 @@ def _build_manifest(params: list, shader_name: str) -> str:
 def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
     """Returns (body, manifest_params)."""
     raw_params = _find_manifest_params(source)
+    # iMouse axes become manifest params; collected here and merged below,
+    # because the Shadertoy path builds `params` after the body rewrite.
+    mouse_axes = []
     if not raw_params:
         for m in re.finditer(
                 r'uniform\s+(float|vec2|vec3|vec4)\s+(\w+)\s*;', source):
@@ -350,21 +424,46 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
         body = re.sub(r'\biChannelTime\b', 'time', body)
     body = re.sub(r'\biResolution\b', 'resolution', body)
     body = re.sub(r'\biTime\b', 'time', body)
+    # iMouse -> x / y manifest parameters, per formal-spec.md:25 and
+    # conversion-guide.md:130 ("iMouse (point2D) -> x, y (two float params)").
+    # Substituting a constant vec4(0.0) instead silently froze every
+    # mouse-driven term: a real Shadertoy glitch shader used
+    # `GLITCH = 0.1 + iMouse.x / iResolution.x`, which became a constant 0.1
+    # and lost its interaction entirely while still validating clean.
     if re.search(r'\biMouse\b', body):
-        body = re.sub(r'\biMouse\b', '(vec4(0.0))', body)
+        body = re.sub(r'\biMouse\.x\b', 'x', body)
+        body = re.sub(r'\biMouse\.y\b', 'y', body)
+        body = re.sub(r'\biMouse\b', 'vec4(x, y, 0.0, 0.0)', body)
+        for _ax in ('x', 'y'):
+            if re.search(r'\b%s\b' % _ax, body):
+                mouse_axes.append(_ax)
         report['warnings'].append(
-            "iMouse replaced with static vec4(0.0) - source was click-driven")
+            "iMouse -> x / y manifest parameters (formal-spec.md:25); the "
+            "source was pointer-driven, so wire these up in VS-2")
     body = re.sub(r'\biDate\b', 'vec4(0.0)', body)
 
     body = _rename_shadowed_engine_vars(body)
 
     if re.search(r'\bmainImage\s*\(', body) and \
             not re.search(r'\bvoid\s+main\s*\(', body):
-        body += ("\nvoid main(void)\n{\n"
-                 "    mainImage(fragColor, gl_FragCoord.xy);\n}\n")
+        # INLINE the Shadertoy entry point into main(), rather than wrapping:
+        #     void mainImage(out vec4 fragColor, in vec2 fragCoord) { ... }
+        #     mainImage(fragColor, gl_FragCoord.xy)
+        # The wrapper form assigns fragColor only inside mainImage, and both
+        # the external validator and a human reading the file miss that. VS-2
+        # shaders put the assignment directly in main() - see every golden
+        # example - so rename the signature and rewrite the two Shadertoy
+        # out/in params to the engine names.
+        def _inline(m):
+            return 'void main(void)' + m.group(1)
+        body = re.sub(
+            r'void\s+mainImage\s*\(\s*out\s+vec4\s+\w+\s*,\s*in\s+vec2\s+\w+\s*\)\s*(\{)',
+            _inline, body, count=1)
+        body = body.replace('fragCoord', 'gl_FragCoord')
     elif not re.search(r'\bvoid\s+main\s*\(', body):
         raise ConversionError("no mainImage() or main() entry point found")
 
+    body = _coalesce_frag_color_writes(body)
     body = _rewrite_output(body)
     body = _ensure_precision(body)
 
@@ -387,6 +486,15 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
         if clean != name:
             body = re.sub(r'\b' + re.escape(name) + r'\b', clean, body)
         params.append({'name': clean, 'default': default})
+
+    for _ax in mouse_axes:
+        if not any(p['name'] == _ax for p in params):
+            if len(params) >= MAX_PARAMS:
+                report['warnings'].append(
+                    "iMouse axis '%s' dropped: over the 7-param budget" % _ax)
+                body = re.sub(r'\b%s\b' % _ax, '0.5', body)
+                continue
+            params.append({'name': _ax, 'default': 0.5})
     return body, params
 
 

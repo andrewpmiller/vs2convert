@@ -389,6 +389,83 @@ class ShadertoyMetaTests(unittest.TestCase):
             'unrepresentable')
 
 
+GLITCH = """float sat( float t ) { return clamp( t, 0.0, 1.0 ); }
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+\tvec2 uv = fragCoord.xy / iResolution.xy;
+\tfloat time = mod(iTime*100.0, 32.0)/110.0;
+\tfloat GLITCH = 0.1 + iMouse.x / iResolution.x;
+\tfloat r0 = sat(GLITCH);
+\tfor( int i=0; i<20; ++i )
+\t{
+\t\tvec4 samplecol = texture( iChannel0, uv );
+\t\tsum += samplecol;
+\t}
+\tfragColor.a = sum.a;
+\tfragColor.rgb = sum.rgb;
+}
+"""
+
+
+class RealShadertoyGlitchTests(unittest.TestCase):
+    """Defects found by running a real Shadertoy glitch shader through it.
+
+    Every case here is a genuine bug this class previously shipped, found by
+    feeding it a real shader rather than a fixture designed to pass.
+    """
+
+    def test_local_named_time_does_not_self_shadow(self):
+        """`float time = mod(iTime*100.0, 32.0)/110.0;` renames to
+        `float time = mod(time*...)`, which initialises time from itself. The
+        shader compiles and renders; it just stops animating. Structural
+        validation cannot see this - only a motion check can."""
+        frag = convert(GLITCH, 'Shadertoy', 'glitch')['frag']
+        self.assertIn('float srcTime', frag)
+        self.assertRegex(frag, r'srcTime\s*=\s*mod\(time\*',
+                         'the initializer must still read the engine time')
+
+    def test_imouse_becomes_manifest_params(self):
+        """iMouse was replaced with a constant vec4(0.0), silently freezing
+        every pointer-driven term. formal-spec.md:25 maps it to x/y params."""
+        result = convert(GLITCH, 'Shadertoy', 'glitch')
+        names = [p['name'] for p in result['params']]
+        # Only the axis the body actually reads becomes a parameter; this
+        # fixture uses iMouse.x, so y must NOT appear as an unused knob.
+        self.assertIn('x', names)
+        self.assertNotIn('y', names)
+        self.assertNotIn('vec4(0.0))', result['frag'])
+        self.assertRegex(result['frag'], r'0\.1\s*\+\s*x\s*/')
+
+    def test_mainimage_is_inlined_into_main(self):
+        """The wrapper form `mainImage(fragColor, gl_FragCoord.xy)` assigns
+        fragColor only inside mainImage, so the external validator reports
+        'no assignment to fragColor' (validate_shader.py:156) on a correct
+        conversion. Every golden VS-2 shader assigns in main() directly."""
+        frag = convert(GLITCH, 'Shadertoy', 'glitch')['frag']
+        self.assertIn('void main(void)', frag)
+        self.assertNotIn('mainImage(', frag)
+        self.assertRegex(frag, r'\bfragColor\s*=\s*vec4\(')
+
+    def test_split_fragcolor_writes_are_coalesced(self):
+        """`fragColor.a = X; fragColor.rgb = Y;` is equivalent GLSL but the
+        external validator requires a single `fragColor =`."""
+        frag = convert(GLITCH, 'Shadertoy', 'glitch')['frag']
+        self.assertNotRegex(frag, r'fragColor\s*\.\s*\w+\s*=')
+
+    def test_image_tex_rename_survives_the_shadow_pass(self):
+        """The iChannel rename produces imageTex; a broadened shadow rename
+        then turned it into srcImageTex and the shader stopped compiling."""
+        frag = convert(GLITCH, 'Shadertoy', 'glitch')['frag']
+        self.assertIn('imageTex', frag)
+        self.assertNotIn('srcImageTex', frag)
+
+    def test_engine_vars_are_not_renamed_without_a_shadow(self):
+        frag = convert('void main(){ fragColor = vec4(time); }',
+                       'PlainGLSL', 'p')['frag']
+        self.assertNotIn('srcTime', frag)
+
+
 class HardGateTests(unittest.TestCase):
     def test_feedback_buffer_rejected(self):
         with self.assertRaises(ConversionError) as ctx:
