@@ -1,0 +1,5 @@
+# Generated .frag output next to fixtures is not tracked.
+*.frag
+!converted_shaders/*.frag
+!factory-examples/*.frag
+!factory-references/**/*.frag
