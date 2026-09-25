@@ -192,6 +192,25 @@ def _rewrite_output(source: str) -> str:
     matches = list(pat.finditer(source))
     if not matches:
         return source
+    # KNOWN LIMITATION (2026-09-25, deliberately left unfixed - see PRD 14).
+    # Only the LAST fragColor assignment is rewritten. A shader that sets its
+    # output inside an if/else chain therefore gets the VS-2 transparency
+    # convention on one branch and not the others, so the screen shows a seam
+    # where alpha behaviour changes mid-frame. Raw `fragColor = vec4(...)` is
+    # still valid GLSL, so this is cosmetic, NOT a compile failure.
+    #
+    # Evidence: 0 of the 79 shipped shaders branch on output, and all 15
+    # VS-2-native shaders (12 factory + 3 image-input) have exactly ONE
+    # assignment - so nothing currently exercises it.
+    #
+    # The fix is NOT to rewrite each branch independently (that is what
+    # produces the seam). It is to hoist the branch outputs into temporaries
+    # and emit ONE final assignment, matching the native convention:
+    #     vec3 vs2Final; float vs2Alpha;
+    #     if (...) { vs2Final = ...; vs2Alpha = ...; } else { ... }
+    #     { ...one output pattern, applied uniformly... }
+    # That is a real GLSL transform, not a regex, and it needs a branched
+    # shader checked in VS-2 before it can be trusted.
     m = matches[-1]
     open_idx = m.end() - 1
     depth = 0
