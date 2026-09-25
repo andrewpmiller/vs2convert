@@ -69,10 +69,10 @@ class OutputPathTests(unittest.TestCase):
 
     def test_output_directory_that_does_not_exist_is_reported(self):
         r = run(['sample-isf.fs', 'no/such/dir/out.frag'], self.dir)
-        self.assertNotEqual(r.returncode, 0,
-                            'writing into a missing directory must not '
-                            'silently succeed')
-        self.assertIn('rror', r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 4,
+                         'a missing output directory is exit 4')
+        self.assertIn('output directory does not exist',
+                      r.stdout.lower())
 
 
 class FlagTests(unittest.TestCase):
@@ -87,12 +87,13 @@ class FlagTests(unittest.TestCase):
         r = run(['ok.fs', '--dry-run'], self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.dir, 'ok.frag')))
-        self.assertIn('preview', r.stdout.lower())
+        self.assertIn('dry run', r.stdout.lower())
 
     def test_validate_flag_reports_valid(self):
         r = run(['ok.fs', '--validate'], self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn('Validation passed', r.stdout)
+        # the verdict names validation, whatever the glyph set in use
+        self.assertIn('validated', r.stdout)
 
     def test_decline_exits_three_and_writes_nothing(self):
         bad = os.path.join(self.dir, 'multi.fs')
@@ -110,7 +111,8 @@ class FlagTests(unittest.TestCase):
                     ' f = texture(iChannel0, c) * texture(iChannel1, c); }')
         r = run(['multi.fs', '--force'], self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn('likely to be broken', r.stdout)
+        # the override must be stated, so the result is not read as trusted
+        self.assertIn('expect it to be wrong', r.stdout.lower())
         self.assertTrue(os.path.exists(os.path.join(self.dir, 'multi.frag')))
 
     def test_verify_without_moderngl_fails_loudly(self):
@@ -133,6 +135,47 @@ class FlagTests(unittest.TestCase):
                       'verify did not run but reported success: %s'
                       % (r.stdout + r.stderr))
         self.assertIn('moderngl', (r.stdout + r.stderr).lower())
+
+
+class VerdictShapeTests(unittest.TestCase):
+    """The verdict must be the last thing on stdout, and must be obvious."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.src = os.path.join(self.dir, 'ok.fs')
+        with open(self.src, 'w') as f:
+            f.write(SIMPLE_ISF)
+
+    def test_success_glyph_and_name_present(self):
+        r = run(['ok.fs'], self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r'(✅|\[ok\])')
+        self.assertIn('ok.frag', r.stdout)
+
+    def test_ascii_mode_avoids_wide_glyphs(self):
+        env = dict(os.environ, VS2_ASCII='1')
+        proc = subprocess.run([sys.executable, APP, 'ok.fs'], cwd=self.dir,
+                              capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        for ch in ('\u2705', '\u26a0', '\u274c'):
+            self.assertNotIn(ch, proc.stdout,
+                             'emoji present despite VS2_ASCII=1')
+
+    def test_missing_verify_is_not_reported_as_failed(self):
+        """Exit 2 is a tooling problem, not a broken shader. Reporting it as
+        a failure sends people looking in the wrong place."""
+        has_gl = True
+        try:
+            import moderngl  # noqa: F401
+        except ImportError:
+            has_gl = False
+        if has_gl:
+            self.skipTest('moderngl present: the gate can actually run')
+        r = run(['ok.fs', '--verify'], self.dir)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn('not verified', r.stdout.lower())
+        self.assertNotIn('failed', r.stdout.lower())
 
 
 if __name__ == '__main__':

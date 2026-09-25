@@ -20,6 +20,7 @@ Examples:
 
 import argparse
 import re
+import textwrap
 import json
 import sys
 from pathlib import Path
@@ -31,232 +32,243 @@ sys.path.insert(0, str(PROJECT_ROOT))
 def main():
     """Main entry point for VS-2 shader conversion."""
     parser = argparse.ArgumentParser(
-        description="VS-2 Shader Conversion App - Convert shaders from ISF, Shadertoy, GLSLSandbox to VS-2 format",
+        description="VS-2 Shader Conversion App - Convert shaders from ISF, "
+                    "Shadertoy, GLSLSandbox to VS-2 format",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog="""Exit codes:
+  0  converted and (if requested) validated / rendered
+  1  validation or render FAILED - the shader is wrong
+  2  --verify could not RUN (missing dependency) - not a shader problem
+  3  declined: the source cannot be converted automatically
+  4  could not write the output
+  5  --strict, and the conversion was UNVERIFIED
+
 Examples:
-    python vs2_convert.py shaders/black_hole_sun.isf converted_black_hole_sun.frag
-    python vs2_convert.py shaders/waves.shadertoy --validate
-    python vs2_convert.py shaders/smoke.glsl --verify --dry-run
-
-Options:
-    --validate    Run structural validation, exit 1 if errors found
-    --verify      Run render verification (headless OpenGL), exit 1 if fails
-    --dry-run     Show what would be generated without writing
-    --help        Show this help message
-        """
-    )
-
-    parser.add_argument("input", help="Input shader file (ISF, Shadertoy, GLSLSandbox, or plain GLSL)")
-    parser.add_argument("output", nargs="?", help="Output .frag file (default: converted_<name>.frag)")
-    parser.add_argument("--validate", action="store_true", help="Run structural validation, exit 1 if errors found")
-    parser.add_argument("--verify", action="store_true", help="Run render verification (headless OpenGL), exit 1 if fails")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be generated without writing")
+  python vs2_convert.py shaders/wave.fs                 # writes wave.frag beside it
+  python vs2_convert.py shaders/wave.fs out.frag
+  python vs2_convert.py shaders/wave.fs --validate --verify
+  python vs2_convert.py shaders/wave.fs -v               # full detail on stderr
+        """)
+    parser.add_argument("input", help="Input shader file")
+    parser.add_argument("output", nargs="?",
+                        help="Output .frag (default: beside the input)")
+    parser.add_argument("--validate", action="store_true",
+                        help="Run structural validation")
+    parser.add_argument("--verify", action="store_true",
+                        help="Render headlessly and check the pixels")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print the shader instead of writing it")
     parser.add_argument("--force", action="store_true",
-                        help="Convert even when the suitability gate declines")
+                        help="Convert even when the gate declines")
     parser.add_argument("--meta", metavar="FILE",
                         help="Shadertoy pass/channel metadata JSON. Also "
                              "auto-detected as <stem>.stmeta.json beside the "
-                             "input, or an inline /*{...}*/ block at the top.")
+                             "input, or an inline /*{...}*/ block.")
     parser.add_argument("--strict", action="store_true",
-                        help="Exit 5 if the conversion was only UNVERIFIED "
-                             "(e.g. a Shadertoy iChannel whose binding the "
-                             "tool cannot inspect). Use in CI.")
-
+                        help="Exit 5 if the conversion is only UNVERIFIED. "
+                             "Use in CI.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Show every step and the full text of each note")
     args = parser.parse_args()
 
+    from core.report import Reporter
     from core.detector import detect_format, check_suitability
     from core.shadertoy_meta import load_meta
     from core.generator import convert, ConversionError
     from validators.validator import run_validation
 
-    # Read source first: detection must see file CONTENTS, not the path (D1)
+    r = Reporter(verbose=args.verbose)
+    name = Path(args.input).name
+
+    def bail(headline, body=None, action=None, code=1):
+        r.failure(name, headline, body=body, action=action, exit_code=code)
+        sys.exit(code)
+
+    # --- read + detect ---------------------------------------------------
     source_path = Path(args.input)
     if not source_path.exists():
-        print(f"[error] Input file not found: {args.input}")
-        sys.exit(1)
+        bail('input not found', body=[str(source_path)], code=1)
     source = source_path.read_text(encoding="utf-8")
+    r.step('reading %s' % source_path)
 
-    print(f"[info] Detecting format for: {args.input}")
     format_info = detect_format(source)
     fmt = format_info["format"]
-    print(f"[info] Format detected: {fmt}")
+    r.step('detected %s' % fmt)
+    for w in format_info.get("warnings") or []:
+        r.note(w)
 
-    if format_info.get("warnings"):
-        print("[warn] Issues detected (proceeding anyway):")
-        for warning in format_info["warnings"]:
-            print(f"  - {warning}")
-
-    # --- suitability gate -----------------------------------------------
-    # The detector computes a suitability verdict, but it used to be purely
-    # advisory: the CLI printed warnings and converted anyway. That let a
-    # shader redeclaring `resolution` be emitted as a .frag that shadows the
-    # engine's uniform. Unsuitable sources are now declined by default.
+    # --- suitability gate ------------------------------------------------
     suitability = check_suitability(source)
     if not suitability["suitable"]:
-        print()
-        print("[decline] This shader is not suitable for automated conversion:")
-        for err in suitability["errors"]:
-            print(f"  - {err}")
-        print()
-        print("[decline] No output was written. Reasons above are the ones the")
-        print("[decline] app could not resolve on its own. Fix the source, or")
-        print("[decline] convert it by hand via the vs2-shader-expert skill.")
         if not args.force:
+            r.failure(name, 'declined',
+                      body=_wrap(suitability["errors"]),
+                      action='convert by hand, or fix the source, or --force',
+                      exit_code=3)
             sys.exit(3)
-        print("[warn] --force given: converting anyway. The result is very")
-        print("[warn] likely to be broken; a render gate is the only real check.")
-    elif suitability.get("warnings"):
-        print("[warn] Suitability notes:")
-        for warning in suitability["warnings"]:
-            print(f"  - {warning}")
+        r.note('--force: converting despite the decline; expect it to be wrong')
+    else:
+        for w in suitability.get("warnings") or []:
+            r.note(w)
 
-    # Optional Shadertoy pass metadata. The .txt is code only; what each
-    # iChannel is bound to lives in the web UI, so without this we can only
-    # guess - and say so.
-    meta = None
-    meta_from = None
+    # --- pass metadata ---------------------------------------------------
+    meta = meta_from = None
     if fmt == 'Shadertoy' or 'mainImage' in source or 'iChannel' in source:
         try:
             meta, meta_from = load_meta(str(source_path), source, args.meta)
-        except ValueError as e:
-            print(f"[error] {e}")
-            sys.exit(1)
-        except (OSError, json.JSONDecodeError) as e:
-            print(f"[error] Could not read pass metadata: {e}")
-            sys.exit(1)
+        except (ValueError, OSError, json.JSONDecodeError) as e:
+            bail('could not read pass metadata', body=[str(e)], code=1)
         if meta:
-            print(f"[info] Pass metadata: {meta_from}")
+            r.step('pass metadata from %s' % meta_from)
 
-    # Convert
-    print("[info] Converting...")
+    # --- convert ---------------------------------------------------------
+    r.step('converting')
     try:
         report = convert(source, fmt, source_path.stem, force=args.force,
                          meta=meta)
     except ConversionError as exc:
-        print(f"[error] {exc}")
-        sys.exit(1)
+        bail('declined', body=_wrap([str(exc)]),
+             action='convert by hand via the vs2-shader-expert skill', code=1)
 
     for item in report["baked"]:
-        print(f"[baked] {item}")
-    _unverified = [w for w in report["warnings"] if w.startswith("UNVERIFIED")]
+        r.step('baked: %s' % item)
     for item in report["warnings"]:
-        print(f"[warn] {item}")
-
-    # A conversion the tool cannot vouch for must not read like a clean pass.
-    # The render gate proves the shader RUNS; it cannot prove the source
-    # semantics were preserved, which is what an UNVERIFIED item is about.
-    if _unverified:
-        print()
-        print("[unverified] This conversion rests on an assumption the tool "
-              "could not check:")
-        for item in _unverified:
-            print(f"  - {item}")
-        print("[unverified] Structural and render gates still apply, but they "
-              "cannot detect a wrong assumption. Review by hand.")
+        if item.startswith("UNVERIFIED"):
+            r.unverified(_short_unverified(item), _unverified_body(item))
+            r.detail('  ' + item)
+        else:
+            r.note(item)
+    _unverified = [w for w in report["warnings"] if w.startswith("UNVERIFIED")]
 
     full_content = report["frag"]
 
-
-    # Output path. Per design decision 2 (PRD §8): the converted file goes in
-    # the SAME directory as the input, named after the input stem with a .frag
-    # extension - so converting `shaders/sample-isf.fs` leaves both files side
-    # by side in `shaders/`. An explicit second argument still wins.
+    # --- output path -----------------------------------------------------
     if args.output:
         output_path = Path(args.output)
     else:
         output_path = source_path.with_suffix('.frag')
-        # An input that is ALREADY .frag would make the default output the
-        # input itself, and we would overwrite the file we just read. Refuse.
         if output_path.resolve() == source_path.resolve():
-            print(f"[error] Refusing to overwrite the input file: "
-                  f"{source_path}")
-            print("[error] Pass an explicit output filename, or convert a "
-                  "source file (.fs / .shadertoy / .glsl).")
-            sys.exit(4)
+            bail('refusing to overwrite the input',
+                 body=['the default output for a .frag input is the input'],
+                 action='pass an explicit output filename', code=4)
 
-    # Structural validation (D2 fix: always initialized)
-    validation_result = {"errors": [], "warnings": []}
+    stats = ['%s . %d param%s' % (fmt, len(report['params']),
+                                    '' if len(report['params']) == 1 else 's')]
+
+    # --- structural validation ------------------------------------------
     if args.validate:
-        print("[info] Running structural validation...")
+        r.step('validating')
         validation_result = run_validation(full_content, output_path.stem)
-        for warning in validation_result["warnings"]:
-            print(f"[warn] {warning}")
+        for w in validation_result["warnings"]:
+            r.note(w)
         if validation_result["errors"]:
-            print("[error] Validation failed:")
-            for error in validation_result["errors"]:
-                print(f"  - {error}")
-            sys.exit(1)
-        print("[info] Validation passed")
+            bail('validation failed', body=_wrap(validation_result["errors"]),
+                 action='fix the source', code=1)
+        stats.append('validated')
 
-    # Optional render verification
+    # --- render verification --------------------------------------------
     if args.verify:
-        print("[info] Running render verification...")
+        r.step('rendering')
         try:
             from renderer.pipeline import run_verification
-            verification_result = run_verification(full_content, output_path.stem)
-            if not verification_result["passed"]:
-                print("[error] Render verification failed:")
-                for error in verification_result["errors"]:
-                    print(f"  - {error}")
-                sys.exit(1)
-            m = verification_result.get("metrics", {})
-            print("[info] Render verification passed "
-                  "(mean=%s std=%s alpha=%s motion=%s)"
-                  % (m.get('mean'), m.get('std'), m.get('alpha'),
-                     m.get('motion')))
         except ImportError:
-            # Must not exit 0 here. The old renderer could not fail, and a
-            # silent skip reads like a pass in CI. Say the gate did not run.
-            print("[error] Render verification could not run: "
-                  "moderngl + numpy + Pillow are required "
-                  "(pip install 'vs2-convert[render]')")
-            print("[error] --verify was requested but did not execute. "
-                  "Treating as FAILED so it cannot be mistaken for a pass.")
+            r.skipped(name, 'converted, but not verified',
+                      body=['the render check could not run'],
+                      action="pip install 'vs2-convert[render]'", exit_code=2)
             sys.exit(2)
+        verification_result = run_verification(full_content, output_path.stem)
+        if not verification_result["passed"]:
+            errs = verification_result["errors"]
+            unavailable = any('unavailable' in e for e in errs)
+            if unavailable:
+                r.skipped(name, 'converted, but not verified',
+                          body=_wrap(errs),
+                          action="pip install 'vs2-convert[render]'",
+                          exit_code=2)
+                sys.exit(2)
+            compile_fail = any('compile' in e for e in errs)
+            bail('render check failed',
+                 body=_gate_lines(errs),
+                 action=('the output did not compile; this is a converter '
+                         'defect, not a problem with your source'
+                         if compile_fail else
+                         'it compiled but is not showing anything useful'),
+                 code=1)
+        m = verification_result.get("metrics", {})
+        stats.append('rendered (motion %s)' % m.get('motion'))
 
     if args.strict and _unverified:
-        print("[error] --strict: conversion is UNVERIFIED, refusing to "
-              "report success. See the [unverified] block above.")
+        r.failure(name, 'UNVERIFIED under --strict',
+                  body=['the conversion rests on an assumption the tool '
+                        'could not check'],
+                  action='check the shader against its original, or drop '
+                         '--strict', exit_code=5)
         sys.exit(5)
 
+    # --- write -----------------------------------------------------------
     if args.dry_run:
-        print("")
-        print("[preview] Generated shader:")
-        print("=" * 60)
+        r.success(name, wrote='(dry run, nothing written)', stats=stats)
+        print()
         print(full_content)
-        print("=" * 60)
-        print("")
-        print(f"[info] Would save to: {output_path}")
-    else:
-        # Do NOT mkdir -p: inventing a directory tree the user did not name
-        # and then reporting success hides typos in the output path. Create
-        # the parent only if it is exactly one level away and clearly
-        # intended; otherwise fail loudly.
-        if not output_path.parent.exists():
-            print(f"[error] Output directory does not exist: "
-                  f"{output_path.parent}")
-            print("[error] Nothing was written. Fix the path, or pass a "
-                  "filename (not a path) to save beside the input.")
-            sys.exit(4)
-        try:
-            output_path.write_text(full_content, encoding="utf-8")
-        except OSError as e:
-            print(f"[error] Could not write {output_path}: {e}")
-            sys.exit(4)
-        print(f"[info] Saved to: {output_path}")
+        return 0
 
-    # Summary
-    print("")
-    print("[summary]")
-    print(f"  Input:    {args.input}")
-    print(f"  Output:   {output_path}")
-    print(f"  Format:   {fmt}")
-    print(f"  Params:   {len(report['params'])}")
-    if args.validate:
-        print(f"  Valid:    {'Yes' if not validation_result['errors'] else 'No'}")
+    if not output_path.parent.exists():
+        bail('output directory does not exist',
+             body=[str(output_path.parent)],
+             action='pass a filename, not a path', code=4)
+    try:
+        output_path.write_text(full_content, encoding="utf-8")
+    except OSError as e:
+        bail('could not write', body=[str(e)], code=4)
+
+    r.success(name, wrote=output_path.name, stats=stats)
     return 0
 
 
-if __name__ == "__main__":
+def _gate_lines(items, width=66):
+    """Render gate errors one per line. A GLSL compiler dump arrives as one
+    long blob and is unreadable when wrapped, so split it on its own line
+    breaks first."""
+    out = []
+    for it in items:
+        text = str(it)
+        if 'ERROR:' in text or len(text) > 200:
+            parts = [p.strip() for p in text.replace('====', '\n').split('\n')]
+            for p in parts:
+                p = p.replace('ERROR: ', '')
+                p = re.sub(r'^(GLSL Compiler failed|fragment_shader|=+)$', '', p)
+                p = p.strip()
+                if p:
+                    out.extend(textwrap.wrap(p, width) or [p])
+        else:
+            out.extend(textwrap.wrap(text, width) or [text])
+    return out
+
+
+def _wrap(items, width=66):
+    """Wrap long gate messages to a readable width."""
+    out = []
+    for it in items:
+        out.extend(textwrap.wrap(str(it), width) or [''])
+    return out
+
+
+def _short_unverified(text):
+    """One-line headline for the UNVERIFIED block."""
+    if 'iChannel' in text:
+        return 'iChannel assumed to be a plain image'
+    return text.split(':')[0][:60].strip()
+
+
+def _unverified_body(text):
+    """Short plain-English consequence. The full original text goes to
+    stderr under -v, so the default output stays scannable."""
+    if 'iChannel' in text:
+        return ['Shadertoy channels can also be buffers, cubemaps, video or',
+                'audio, and only the shader page says which. Check it there,',
+                'or add a <name>.stmeta.json beside the .txt.']
+    return _wrap([text])
+
+
+if __name__ == '__main__':
     sys.exit(main())
