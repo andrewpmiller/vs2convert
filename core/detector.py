@@ -14,6 +14,12 @@ from .textutil import code_only
 # --- Detection Patterns ---
 
 # ISF: Has JSON manifest with "INPUTS" (ISF) or "parameters" (VS-2 style) array
+# ISF's own declaration is an "INPUTS" array (uppercase). A VS-2-style
+# manifest uses lowercase "parameters" and a Shadertoy .txt may carry one, so
+# conflating the two let a Shadertoy file look like ISF and - worse - let a
+# mainImage() override a real ISF INPUTS block, silently discarding it.
+ISF_INPUTS_RE = re.compile(r'/\*.*?"INPUTS".*?\*/', re.DOTALL)
+VS2_PARAMETERS_RE = re.compile(r'/\*.*?"parameters".*?\*/', re.DOTALL)
 ISF_MANIFEST_RE = re.compile(r'/\*.*?"(?:INPUTS|parameters)".*?\*/', re.DOTALL)
 ISF_CODE_RE = re.compile(r'(uniform\s+float\s+iTime|uniform\s+vec2\s+iResolution|uniform\s+vec2\s+iMouse|uniform\s+sampler2D\s+iChannel\d+)')
 
@@ -95,15 +101,20 @@ def detect_format(source: str) -> dict:
     # Detect format
     format_name = "PlainGLSL"
     
-    # ISF check
-    if ISF_MANIFEST_RE.search(source) and not (SHADERTOY_MAINIMAGE_RE.search(source) or GLSLSANDBOX_TIME_RE.search(source)):
+    # ISF first, and on the strength of a real INPUTS block. ISF is
+    # self-describing: the manifest declares what the file is, so it
+    # outranks a `mainImage` that happens to be present. Previously mainImage
+    # won, and a Shadertoy-imported ISF had its INPUTS silently discarded -
+    # its knobs vanished and the body kept undeclared names, producing GLSL
+    # that would not compile.
+    if ISF_INPUTS_RE.search(source):
         format_name = "ISF"
-    # Shadertoy check
-    elif SHADERTOY_MAINIMAGE_RE.search(source) or (SHADERTOY_TIME_RE.search(source) and not ISF_MANIFEST_RE.search(source)):
-        format_name = "Shadertoy"
-    # GLSLSandbox check
+    # GLSLSandbox: uniform time/resolution declarations, no mainImage.
     elif GLSLSANDBOX_TIME_RE.search(source) or GLSLSANDBOX_RESOLUTION_RE.search(source):
         format_name = "GLSLSandbox"
+    # Shadertoy: mainImage, or iTime with no ISF manifest.
+    elif SHADERTOY_MAINIMAGE_RE.search(source) or (SHADERTOY_TIME_RE.search(source) and not VS2_PARAMETERS_RE.search(source)):
+        format_name = "Shadertoy"
     # MilkDrop check (HLSL functions present)
     elif HLSL_FRACTION_RE.search(code) or HLSL_LERP_RE.search(code) or HLSL_TEXTURE2D_RE.search(code):
         format_name = "MilkDrop"

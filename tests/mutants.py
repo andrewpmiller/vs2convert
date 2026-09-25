@@ -288,4 +288,35 @@ MUTATIONS = [
              '- a bare `y` in a comment. Scanning raw text added a phantom y '
              'knob the shader never uses.'),
     ),
+
+    # ---- detector precedence and GLSLSandbox coverage ----------------
+    Mutation(
+        name='detector: let mainImage override an ISF manifest',
+        path='core/detector.py',
+        find='    if ISF_INPUTS_RE.search(source):',
+        replace='    if ISF_INPUTS_RE.search(source) and not SHADERTOY_MAINIMAGE_RE.search(source):',
+        selector='test_engine.DetectorPrecedenceTests',
+        why=('ISF is self-describing: the INPUTS block outranks a coincidental '
+             'mainImage. Restoring the old precedence made a Shadertoy-imported '
+             'ISF lose its knobs and emit GLSL that would not compile.'),
+    ),
+    Mutation(
+        name='detector: conflate ISF INPUTS with a VS-2 parameters block',
+        path='core/detector.py',
+        find='    elif SHADERTOY_MAINIMAGE_RE.search(source) or (SHADERTOY_TIME_RE.search(source) and not VS2_PARAMETERS_RE.search(source)):',
+        replace='    elif SHADERTOY_MAINIMAGE_RE.search(source) or SHADERTOY_TIME_RE.search(source):',
+        selector='test_engine.DetectorPrecedenceTests',
+        why=('A Shadertoy .txt may carry a lowercase VS-2-style "parameters" '
+             'manifest; conflating it with ISF "INPUTS" misroutes the file.'),
+    ),
+    Mutation(
+        name='detector: stop detecting GLSLSandbox',
+        path='core/detector.py',
+        find='    elif GLSLSANDBOX_TIME_RE.search(source) or GLSLSANDBOX_RESOLUTION_RE.search(source):',
+        replace='    elif False:',
+        selector='test_engine.GLSLSandboxTests',
+        why=('GLSLSandbox is advertised in --help. It had zero coverage until '
+             'this suite; the one manual run that "verified" it was exactly '
+             'the kind of unverified claim the tests exist to prevent.'),
+    ),
 ]

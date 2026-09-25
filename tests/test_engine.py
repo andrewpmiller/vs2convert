@@ -14,7 +14,15 @@ TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(TESTS_DIR))
 sys.path.insert(0, os.path.dirname(TESTS_DIR))
 
+from core.detector import detect_format
 from core.generator import convert, ConversionError
+
+
+def _read_fixture(name):
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, name)) as f:
+        return f.read()
 
 VALIDATOR = os.path.join(REPO_ROOT, '.cline', 'skills', 'vs2-shader-expert',
                          'scripts', 'validate_shader.py')
@@ -562,6 +570,110 @@ class RealShadertoyGlitchTests(unittest.TestCase):
         frag = convert('void main(){ fragColor = vec4(time); }',
                        'PlainGLSL', 'p')['frag']
         self.assertNotIn('srcTime', frag)
+
+
+class GLSLSandboxTests(unittest.TestCase):
+    """GLSLSandbox: uniform time/resolution declarations, no JSON manifest.
+
+    Advertised in --help as supported but had zero test coverage until
+    2026-09-25 (PRD limitation 14.2). The single manual run that "verified"
+    it was exactly the kind of unverified claim this suite exists to prevent.
+    """
+
+    def test_detected_as_glslsandbox(self):
+        src = _read_fixture('test_glslsandbox.shadertoy')
+        self.assertEqual(detect_format(src)['format'], 'GLSLSandbox')
+
+    def test_resolution_only_variant_is_detected(self):
+        src = _read_fixture('test_glslsandbox_resolution.fragshadertoy')
+        self.assertEqual(detect_format(src)['format'], 'GLSLSandbox')
+
+    def test_converts_and_strips_uniforms(self):
+        frag = convert(_read_fixture('test_glslsandbox.shadertoy'),
+                       'GLSLSandbox', 'gs')['frag']
+        # the `uniform` declarations must be gone: VS-2 injects them
+        self.assertNotIn('uniform float time', frag)
+        self.assertNotIn('uniform vec2 resolution', frag)
+        # ...and the engine names must be used instead
+        self.assertIn('resolution.xy', frag)
+        # gl_FragColor must be rewritten to the VS-2 name, not left behind
+        self.assertNotIn('gl_FragColor', frag)
+        self.assertRegex(frag, r'fragColor\s*=')
+
+    def test_output_uses_the_procedural_pattern(self):
+        frag = convert(_read_fixture('test_glslsandbox.shadertoy'),
+                       'GLSLSandbox', 'gs')['frag']
+        self.assertIn('coloredPixels', frag)
+        self.assertRegex(frag, r'fragColor\s*=\s*vec4\(')
+
+
+class DetectorPrecedenceTests(unittest.TestCase):
+    """A real ISF INPUTS block must not be overridden by a mainImage().
+
+    Found in the 2026-09-25 audit: a file carrying BOTH had its ISF manifest
+    silently discarded, its knobs dropped, and undeclared names left in the
+    body - producing GLSL that would not compile. ISF is self-describing, so
+    the manifest outranks a coincidental mainImage.
+    """
+
+    ISF_WITH_MAINIMAGE = """/*{
+  "INPUTS": [ {"NAME": "Zoom", "TYPE": "float", "DEFAULT": 3.0,
+               "MIN": 1.0, "MAX": 6.0} ]
+}*/
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    fragColor = vec4(uv * Zoom, 1.0);
+}
+"""
+
+    def test_isf_manifest_wins_over_mainimage(self):
+        self.assertEqual(detect_format(self.ISF_WITH_MAINIMAGE)['format'],
+                         'ISF')
+
+    def test_isf_params_are_not_lost(self):
+        result = convert(self.ISF_WITH_MAINIMAGE, 'ISF', 'both')
+        names = [p['name'] for p in result['params']]
+        self.assertIn('zoom', names, 'the ISF knob was discarded')
+        self.assertIn('fragColor', result['frag'])
+
+    def test_shadertoy_with_vs2_params_block_is_still_shadertoy(self):
+        """Lowercase "parameters" is a VS-2-style manifest a Shadertoy .txt
+        may carry. It must not make the file look like ISF."""
+        src = ('/*{"parameters": [{"name": "detail", "default": 0.5}]}*/\n'
+               'void mainImage(out vec4 f, in vec2 c){'
+               ' f = vec4(0.5, 0.2, 0.1, 1.0); }')
+        self.assertEqual(detect_format(src)['format'], 'Shadertoy')
+
+    def test_itime_with_parameters_block_is_plain_glsl(self):
+        """The iTime branch specifically, with no mainImage to fall back on.
+
+        Without this case the whole VS2_PARAMETERS_RE guard was untested: a
+        mutation removing it survived, because every other fixture still
+        matched via mainImage and so detected correctly either way.
+
+        The guard routes this to PlainGLSL, NOT Shadertoy, and that is
+        correct: a VS-2-style `parameters` manifest must go through the path
+        that reads it, or the knob is silently dropped. Verified - the knob
+        survives as a param, whereas the Shadertoy path would lose it.
+        """
+        src = ('/*{"parameters": [{"name": "detail", "default": 0.5}]}*/\n'
+               'void main(){ fragColor = vec4(iTime * 0.1 * detail); }')
+        self.assertEqual(detect_format(src)['format'], 'PlainGLSL')
+        result = convert(src, 'PlainGLSL', 'p')
+        self.assertIn('detail', [p['name'] for p in result['params']],
+                      'the manifest knob was lost on the way through')
+
+    def test_itime_with_isf_inputs_block_is_isf(self):
+        """And the mirror case: ISF INPUTS still outranks an iTime body."""
+        src = ('/*{"INPUTS": [{"NAME": "Zoom", "TYPE": "float",'
+               ' "DEFAULT": 1.0}]}*/\n'
+               'void main(){ fragColor = vec4(iTime * Zoom); }')
+        self.assertEqual(detect_format(src)['format'], 'ISF')
+
+    def test_plain_shadertoy_still_detected(self):
+        src = ('void mainImage(out vec4 f, in vec2 c){'
+               ' f = vec4(0.5, 0.2, 0.1, 1.0); }')
+        self.assertEqual(detect_format(src)['format'], 'Shadertoy')
 
 
 class HardGateTests(unittest.TestCase):
