@@ -1,0 +1,207 @@
+"""Deterministic tests for vs2_convert/validators/validator.py.
+
+These exist because two agent-flagged "Critical" findings were adjudicated as
+false positives by hand. Hand adjudication is not a safeguard - it is exactly
+the kind of claim that failed review. Each adjudication is pinned here as an
+executable assertion instead, so a change that reintroduces the reviewed-for
+regression fails the suite rather than passing on my say-so.
+
+Run: python3 vs2_convert/tests/test_validator.py
+"""
+import glob
+import os
+import sys
+import unittest
+
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+VS2_DIR = os.path.dirname(TESTS_DIR)
+REPO_ROOT = os.path.dirname(VS2_DIR)
+sys.path.insert(0, VS2_DIR)
+
+from validators.validator import (
+    run_validation,
+    _has_uniform_declarations,
+    _has_engine_var_redecl,
+    _has_custom_speed_params,
+)
+
+# Ground truth corpus: every shader VS-2 has actually shipped.
+CORPUS = sorted(glob.glob(os.path.join(REPO_ROOT, 'converted_shaders', '*.frag'))
+                + glob.glob(os.path.join(REPO_ROOT, 'factory-examples', '*.frag')))
+
+MINIMAL_VALID = '\n'.join([
+    '/*{"parameters": [{"name": "level", "default": 0.5}]}*/',
+    '#ifdef GL_ES',
+    'precision highp float;',
+    '#endif',
+    'void main() {',
+    '    vec2 uv = gl_FragCoord.xy / resolution.xy;',
+    '    float div = resolution.y / resolution.x;',
+    '    vec3 c = vec3(level) * color.rgb;',
+    '    float coloredPixels = dot(clamp(c, 0.0, 1.0), vec3(1.0));',
+    '    fragColor = vec4(c, alpha * coloredPixels);',
+    '}',
+])
+
+
+def _read(path):
+    with open(path) as fh:
+        return fh.read()
+
+
+class UniformRuleAdjudicationTests(unittest.TestCase):
+    """ADJUDICATION: any uniform/varying declaration is an ERROR.
+
+    A review claimed this rule was a bug that "rejects valid code", on the
+    grounds that PRD hard rule 5 only forbids redeclaring the 7 engine vars.
+    That claim was false. VS-2 injects its own uniforms and varyings; ANY
+    declaration in the body shadows engine state. The authoritative external
+    validator (validate_shader.py:125) makes any uniform/varying an error.
+    Ground truth: 0 uniform/varying declarations across every shipped shader
+    (asserted in CorpusParityTests below).
+
+    These tests exist so that "relax the rule to allow custom uniforms" cannot
+    land silently. It would be a real regression, not a fix.
+    """
+
+    def test_custom_uniform_is_an_error_not_a_pass(self):
+        """A CUSTOM uniform must still be rejected - the engine owns the
+        uniform namespace. This is the exact behaviour the review wanted
+        reversed; reversing it is the regression these tests guard."""
+        self.assertTrue(_has_uniform_declarations('uniform float myParam;'))
+
+    def test_indented_uniform_is_caught(self):
+        # Pre-fix regex was anchored at column 0 and missed indented decls.
+        self.assertTrue(_has_uniform_declarations('    uniform float x;'))
+
+    def test_varying_is_caught(self):
+        self.assertTrue(_has_uniform_declarations('varying vec2 vUv;'))
+
+    def test_commented_uniform_is_not_a_declaration(self):
+        self.assertFalse(_has_uniform_declarations('// uniform float x;'))
+        self.assertFalse(_has_uniform_declarations('    // uniform float x;'))
+
+    def test_clean_shader_has_no_uniform_declarations(self):
+        self.assertFalse(_has_uniform_declarations(MINIMAL_VALID))
+
+    def test_external_validator_bans_these_too(self):
+        """Parity with the authoritative gate. If the external validator ever
+        relaxes this, this test fails and the question is reopened
+        deliberately rather than by a confident review."""
+        validator = os.path.join(REPO_ROOT, '.cline', 'skills',
+                                 'vs2-shader-expert', 'scripts',
+                                 'validate_shader.py')
+        src = _read(validator)
+        self.assertIn('uniform', src)
+        self.assertIn('varying', src)
+        self.assertIn('engine injects', src)
+
+
+class EngineVarRedeclTests(unittest.TestCase):
+    def test_engine_var_redecl_caught(self):
+        self.assertTrue(_has_engine_var_redecl('vec2 resolution;'))
+        self.assertTrue(_has_engine_var_redecl('float time;'))
+
+    def test_indented_engine_var_is_not_global_scope(self):
+        self.assertFalse(_has_engine_var_redecl('    vec2 resolution;'))
+
+
+class SpeedKeywordParityTests(unittest.TestCase):
+    """ADJUDICATION: the validator's keyword list must cover the mapper's.
+
+    A review found validator.py:104 missing 'twist_speed', which mapper.py:114
+    has. The validator is defense-in-depth: it exists to catch what the mapper
+    missed, so a NARROWER list defeats the purpose. Pinned so the two lists
+    cannot silently drift apart again.
+    """
+
+    def test_validator_keywords_cover_mapper_keywords(self):
+        from core.mapper import _is_speed_parameter
+        for kw in ['speed', 'rate', 'frequency', 'freq', 'twist_speed']:
+            probe = '/*{"parameters": [{"name": "x_%s", "default": 0.5}]}*/' % kw
+            self.assertTrue(
+                _has_custom_speed_params(probe),
+                "validator misses mapper speed keyword '%s'" % kw)
+            self.assertTrue(_is_speed_parameter('x_%s' % kw, {}))
+
+    def test_validator_keyword_list_is_a_superset_of_mapper_list(self):
+        """Structural pin, because the behavioural test above cannot catch
+        keyword-list drift here.
+
+        Deleting 'twist_speed' from the validator is a NO-OP: the substring
+        'speed' already matches any name containing 'twist_speed'. That makes
+        it an equivalent mutant - the behaviour is identical, so no
+        behaviour-based test can fail. Pinned structurally instead so the two
+        lists cannot silently diverge.
+
+        (Recorded because a review reported the missing 'twist_speed' as a
+        High-severity defense-in-depth gap. It is defensive bookkeeping, not
+        a behavioural defect.)
+        """
+        import re as _re
+        val_src = _read(os.path.join(VS2_DIR, 'validators', 'validator.py'))
+        map_src = _read(os.path.join(VS2_DIR, 'core', 'mapper.py'))
+
+        def _list_from(src, varname):
+            m = _re.search(varname + r"\s*=\s*\[(.*?)\]", src, _re.DOTALL)
+            self.assertIsNotNone(m, "could not find %s" % varname)
+            return set(_re.findall(r"'([^']+)'", m.group(1)))
+
+        val_kws = _list_from(val_src, 'speed_patterns')
+        map_kws = _list_from(map_src, 'speed_keywords')
+        self.assertTrue(
+            map_kws.issubset(val_kws),
+            "validator keywords %s do not cover mapper keywords %s"
+            % (sorted(val_kws), sorted(map_kws)))
+
+    def test_speed_check_reads_params_not_raw_text(self):
+        """The pre-fix version regexed the whole file, so the word 'speed' in
+        a comment or variable name produced a false positive."""
+        noisy = ('// this shader moves at high speed\n'
+                 '/*{"parameters": [{"name": "level", "default": 0.5}]}*/\n')
+        self.assertFalse(_has_custom_speed_params(noisy))
+
+
+class CorpusParityTests(unittest.TestCase):
+    """Ground truth: the shipped corpus must produce zero uniform/varying
+    errors. This is the executable version of the 'no shipped shader declares
+    uniforms' evidence - it re-derives the fact on every run rather than
+    trusting a one-off grep quoted in a review."""
+
+    def test_corpus_is_non_trivial(self):
+        self.assertGreaterEqual(len(CORPUS), 50,
+                                'corpus unexpectedly small - parity checks '
+                                'would be vacuous')
+
+    def test_corpus_has_zero_uniform_declarations(self):
+        offenders = [f for f in CORPUS
+                     if _has_uniform_declarations(_read(f))]
+        self.assertEqual(offenders, [],
+                         'shipped shaders must not declare uniform/varying')
+
+    def test_corpus_produces_no_uniform_errors(self):
+        bad = []
+        for f in CORPUS:
+            result = run_validation(_read(f), f)
+            for e in result['errors']:
+                if 'uniform' in e.lower() or 'varying' in e.lower():
+                    bad.append((f, e))
+        self.assertEqual(bad, [], 'uniform/varying false positives on corpus')
+
+
+class SanityTests(unittest.TestCase):
+    def test_minimal_valid_shader_passes(self):
+        result = run_validation(MINIMAL_VALID, 'minimal')
+        self.assertEqual(result['errors'], [],
+                         'unexpected errors: %s' % result['errors'])
+
+    def test_custom_uniform_surfaces_as_error(self):
+        src = MINIMAL_VALID.replace('void main() {',
+                                    'uniform float sneaky;\nvoid main() {')
+        result = run_validation(src, 'probe')
+        self.assertFalse(result['passed'])
+        self.assertTrue(any('uniform' in e.lower() for e in result['errors']))
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

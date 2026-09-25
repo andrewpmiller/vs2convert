@@ -1,0 +1,206 @@
+"""Deterministic tests for the vs2_convert conversion engine.
+
+Run: python3 vs2_convert/tests/test_engine.py
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(TESTS_DIR))
+sys.path.insert(0, os.path.dirname(TESTS_DIR))
+
+from core.generator import convert, ConversionError
+
+VALIDATOR = os.path.join(REPO_ROOT, '.cline', 'skills', 'vs2-shader-expert',
+                         'scripts', 'validate_shader.py')
+
+SHADERTOY = """// test
+/*
+{ "parameters": [
+    {"name": "detail", "default": 0.5},
+    {"name": "speed", "default": 0.5} ] }
+*/
+void mainImage(out vec4 fragColor, in vec2 fragCoord)
+{
+    vec2 uv = fragCoord / iResolution.xy;
+    float t = iTime * 0.5;
+    vec3 color = vec3(sin(uv.x * 10.0 + t));
+    fragColor = vec4(color, 1.0);
+}
+"""
+
+ISF = """/*{
+ "INPUTS": [
+  {"NAME": "Zoom", "TYPE": "float", "DEFAULT": 3.0, "MIN": 1.0, "MAX": 6.0},
+  {"NAME": "RotateSpeed", "TYPE": "float", "DEFAULT": 0.4, "MIN": 0.0, "MAX": 2.0},
+  {"NAME": "Tint", "TYPE": "color", "DEFAULT": [0.3, 0.7, 0.9, 1.0]}
+ ]
+}*/
+
+float helper(float zoom, float x)
+{
+    return zoom * x;
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / RENDERSIZE.xy;
+    float v = helper(Zoom, uv.x + TIME * RotateSpeed);
+    vec3 c = vec3(v) * Tint.rgb;
+    gl_FragColor = vec4(c, 1.0);
+}
+"""
+
+ISF_FEEDBACK = """/*{
+ "INPUTS": [{"NAME": "Zoom", "TYPE": "float", "DEFAULT": 1.0, "MIN": 0.0, "MAX": 2.0}],
+ "PASSES": [{"TARGET": "bufferA", "PERSISTENT": true}, {}]
+}*/
+void main() {
+    vec4 prev = IMG_NORM_PIXEL(bufferA, isf_FragNormCoord);
+    gl_FragColor = prev;
+}
+"""
+
+ISF_IMAGE = """/*{
+ "INPUTS": [{"NAME": "img", "TYPE": "image"}]
+}*/
+void main() { gl_FragColor = IMG_NORM_PIXEL(img, isf_FragNormCoord); }
+"""
+
+
+def validate_text(text, name='probe'):
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, f'{name}.frag')
+        with open(p, 'w') as f:
+            f.write(text)
+        r = subprocess.run([sys.executable, VALIDATOR, p],
+                           capture_output=True, text=True)
+        return r.returncode, r.stdout
+
+
+class ConvertShadertoyTests(unittest.TestCase):
+    def test_produces_valid_frag(self):
+        result = convert(SHADERTOY, 'Shadertoy', 'probe')
+        rc, out = validate_text(result['frag'])
+        self.assertEqual(rc, 0, out)
+
+    def test_output_pattern_and_aliases(self):
+        frag = convert(SHADERTOY, 'Shadertoy', 'probe')['frag']
+        self.assertIn('coloredPixels', frag)
+        self.assertIn('void main(void)', frag)
+        self.assertNotIn('iResolution', frag)
+        self.assertNotIn('iTime', frag)
+
+    def test_speed_param_baked_not_in_manifest(self):
+        result = convert(SHADERTOY, 'Shadertoy', 'probe')
+        names = [p['name'] for p in result['params']]
+        self.assertIn('detail', names)
+        self.assertNotIn('speed', names)
+        self.assertTrue(any('speed' in b for b in result['baked']))
+
+    def test_local_color_shadow_renamed(self):
+        frag = convert(SHADERTOY, 'Shadertoy', 'probe')['frag']
+        # the local `vec3 color` must not shadow the engine tint uniform
+        self.assertIn('srcColor', frag)
+        self.assertIn('color.rgb', frag)
+
+
+class ConvertIsfTests(unittest.TestCase):
+    def test_produces_valid_frag(self):
+        result = convert(ISF, 'ISF', 'probe')
+        rc, out = validate_text(result['frag'])
+        self.assertEqual(rc, 0, out)
+
+    def test_knob_range_remap(self):
+        frag = convert(ISF, 'ISF', 'probe')['frag']
+        # Zoom default 3.0 in [1,6] -> knob 0.4, body keeps absolute range
+        self.assertIn('(1 + zoom * (6 - 1))', frag.replace('.0', ''))
+
+    def test_speed_input_baked(self):
+        result = convert(ISF, 'ISF', 'probe')
+        names = [p['name'] for p in result['params']]
+        self.assertNotIn('rotate_speed', names)
+
+    def test_param_declaration_not_wrapped(self):
+        # helper(float zoom, ...) must stay a declaration, not an expression
+        frag = convert(ISF, 'ISF', 'probe')['frag']
+        self.assertNotRegex(frag, r'float\s*\(')
+
+    def test_color_input_baked_to_literal(self):
+        frag = convert(ISF, 'ISF', 'probe')['frag']
+        self.assertIn('vec4(0.3, 0.7, 0.9, 1.0)', frag)
+
+    def test_magnitude_fidelity_round_trip(self):
+        """The knob default in the emitted manifest, substituted into the
+        emitted body formula, must reproduce the source's original DEFAULT.
+
+        This is the single most important correctness property of a
+        conversion tool: a knob sitting at its default position must render
+        what the source shader rendered at its default. String-matching the
+        formula (as test_knob_range_remap does) proves the text is present,
+        not that the arithmetic round-trips.
+        """
+        frag = convert(ISF, 'ISF', 'probe')['frag']
+
+        # Source INPUTS defaults, keyed by the knob name they map to.
+        # (ISF fixture: Zoom DEFAULT 3.0 over MIN 1.0 / MAX 6.0.)
+        source_default = {'zoom': 3.0}
+
+        # 1. knob defaults from the emitted manifest
+        manifest = json.loads(re.search(r'/\*(.*?)\*/', frag, re.DOTALL).group(1))
+        knob_defaults = {p['name']: p['default']
+                         for p in manifest.get('parameters', [])}
+
+        # 2. body formulas: "(LO + name * (HI - LO))"
+        pattern = re.compile(
+            r'\(\s*([-\d.]+)\s*\+\s*(\w+)\s*\*\s*\(([-\d.]+)\s*-\s*([-\d.]+)\)\s*\)')
+
+        checked = 0
+        for lo_s, name, hi_s, lo2_s in pattern.findall(frag):
+            if name not in knob_defaults or name not in source_default:
+                continue
+            lo, hi, lo2 = float(lo_s), float(hi_s), float(lo2_s)
+            self.assertEqual(lo, lo2,
+                             f"formula for '{name}' has mismatched lo bounds")
+            # 3. substitute the knob default and evaluate the arithmetic
+            knob = knob_defaults[name]
+            restored = lo + knob * (hi - lo)
+            checked += 1
+            self.assertAlmostEqual(
+                restored, source_default[name], places=6,
+                msg=(f"magnitude drift on '{name}': knob {knob} in range "
+                     f"[{lo}, {hi}] restored {restored}, expected "
+                     f"{source_default[name]}"))
+
+        self.assertGreater(checked, 0,
+                           'no knob formula matched - test would be vacuous')
+
+
+class HardGateTests(unittest.TestCase):
+    def test_feedback_buffer_rejected(self):
+        with self.assertRaises(ConversionError) as ctx:
+            convert(ISF_FEEDBACK, 'ISF', 'probe')
+        self.assertIn('feedback', str(ctx.exception))
+
+    def test_image_input_rejected(self):
+        with self.assertRaises(ConversionError) as ctx:
+            convert(ISF_IMAGE, 'ISF', 'probe')
+        self.assertIn('image', str(ctx.exception))
+
+    def test_hlsl_rejected(self):
+        with self.assertRaises(ConversionError):
+            convert('void main(){ float x = frac(1.0); }', 'PlainGLSL', 'p')
+
+    def test_ichannel_rejected(self):
+        src = SHADERTOY.replace('fragColor = vec4(color, 1.0);',
+                                'fragColor = texture(iChannel0, uv);')
+        with self.assertRaises(ConversionError):
+            convert(src, 'Shadertoy', 'p')
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)
