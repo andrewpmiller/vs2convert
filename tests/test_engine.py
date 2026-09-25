@@ -435,7 +435,34 @@ class RealShadertoyGlitchTests(unittest.TestCase):
         self.assertIn('x', names)
         self.assertNotIn('y', names)
         self.assertNotIn('vec4(0.0))', result['frag'])
-        self.assertRegex(result['frag'], r'0\.1\s*\+\s*x\s*/')
+        # UNITS: Shadertoy's iMouse.xy is in PIXELS, a VS-2 knob is 0..1.
+        # Emitting a bare `x` under a `/ iResolution.x` divisor would shrink
+        # the term ~1000x. Emitting `x * resolution.x` preserves the source's
+        # arithmetic exactly.
+        self.assertRegex(result['frag'],
+                         r'0\.1\s*\+\s*\(x\s*\*\s*resolution\.x\)\s*/'
+                         r'\s*resolution\.x')
+
+    def test_ishadertoy_mouse_is_expressed_in_pixels(self):
+        """iMouse.xy is in PIXELS on Shadertoy; a VS-2 knob is 0..1.
+
+        Two source forms, both of which must keep their arithmetic:
+          0.1 + iMouse.x / iResolution.x   ->  0.1 + (x*resolution.x)/resolution.x
+          iMouse.x / 100.0                 ->  (x*resolution.x)/100.0
+        A bare `x` in the first form would give 0.5/1920 instead of 0.5.
+        """
+        divided = convert(
+            'void mainImage(out vec4 f, in vec2 c){'
+            ' float g = 0.1 + iMouse.x / iResolution.x;'
+            ' f = vec4(g, g, g, 1.0); }', 'Shadertoy', 'p')['frag']
+        self.assertIn('(x * resolution.x) / resolution.x', divided)
+        self.assertNotRegex(divided, r'\+\s*x\s*/\s*resolution\.x')
+
+        scaled = convert(
+            'void mainImage(out vec4 f, in vec2 c){'
+            ' float m = iMouse.x / 100.0;'
+            ' f = vec4(m, m, m, 1.0); }', 'Shadertoy', 'p')['frag']
+        self.assertIn('(x * resolution.x) / 100.0', scaled)
 
     def test_mainimage_is_inlined_into_main(self):
         """The wrapper form `mainImage(fragColor, gl_FragCoord.xy)` assigns

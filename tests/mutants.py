@@ -229,4 +229,17 @@ MUTATIONS = [
         why=('IMPORTED names image files shipped with the .fs; VS-2 has '
              'nowhere to put them, so the blend would silently vanish.'),
     ),
+
+    # ---- iMouse units: pixels, not normalized ------------------------
+    Mutation(
+        name='generator: emit iMouse as a bare normalized knob',
+        path='core/generator.py',
+        find="body = re.sub(r'\\biMouse\\.x\\b', '(x * resolution.x)', body)",
+        replace="body = re.sub(r'\\biMouse\\.x\\b', 'x', body)",
+        selector='test_engine',
+        why=('Shadertoy iMouse.xy is in PIXELS; a VS-2 knob is 0..1. A real '
+             'glitch shader did `0.1 + iMouse.x / iResolution.x`, and a bare x '
+             'gives 0.5/1920 instead of 0.5 - a ~1000x error that still '
+             'compiles, renders and validates clean.'),
+    ),
 ]

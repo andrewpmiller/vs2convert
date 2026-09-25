@@ -431,15 +431,29 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
     # `GLITCH = 0.1 + iMouse.x / iResolution.x`, which became a constant 0.1
     # and lost its interaction entirely while still validating clean.
     if re.search(r'\biMouse\b', body):
-        body = re.sub(r'\biMouse\.x\b', 'x', body)
-        body = re.sub(r'\biMouse\.y\b', 'y', body)
-        body = re.sub(r'\biMouse\b', 'vec4(x, y, 0.0, 0.0)', body)
+        # UNITS. Shadertoy's iMouse.xy is in PIXELS, not normalized - confirmed
+        # in the Shadertoy/Natron porting docs ("Mouse position, in pixels") and
+        # in Shadertoy's own idiom `vec2 mouse = iMouse.xy / iResolution.xy`.
+        # A VS-2 knob is 0..1, so substituting one directly under a
+        # `/ iResolution.x` divisor changes the term by ~1000x: a real glitch
+        # shader used `0.1 + iMouse.x / iResolution.x`, and the naive mapping
+        # produced `0.1 + x / resolution.x` = 0.1 + 0.5/1920 instead of 0.6.
+        #
+        # So: emit iMouse in PIXELS (`x * resolution.x`), which preserves the
+        # source's arithmetic exactly. The source's own division then yields
+        # the normalized value it always did.
+        body = re.sub(r'\biMouse\.x\b', '(x * resolution.x)', body)
+        body = re.sub(r'\biMouse\.y\b', '(y * resolution.y)', body)
+        body = re.sub(r'\biMouse\b',
+                      'vec4(x * resolution.x, y * resolution.y, 0.0, 0.0)',
+                      body)
         for _ax in ('x', 'y'):
             if re.search(r'\b%s\b' % _ax, body):
                 mouse_axes.append(_ax)
         report['warnings'].append(
-            "iMouse -> x / y manifest parameters (formal-spec.md:25); the "
-            "source was pointer-driven, so wire these up in VS-2")
+            "iMouse -> x / y manifest parameters (formal-spec.md:25), "
+            "expressed in PIXELS to match Shadertoy's units, so the source's "
+            "own / iResolution arithmetic is preserved. Wire these up in VS-2.")
     body = re.sub(r'\biDate\b', 'vec4(0.0)', body)
 
     body = _rename_shadowed_engine_vars(body)
