@@ -142,4 +142,35 @@ MUTATIONS = [
         why=('Same no-op as the validator side. Unkillable by behaviour; the '
              'structural superset assertion covers it.'),
     ),
+
+    # ---- detector: the suitability gate --------------------------------
+    Mutation(
+        name='detector: suitability verdict always True',
+        path='core/detector.py',
+        find='    result["suitable"] = len(result["errors"]) == 0',
+        replace='    result["suitable"] = True',
+        selector='test_validator.SuitabilityGateTests',
+        why=('The original defect: the CLI computed a verdict and ignored it, '
+             'so a shader redeclaring `resolution` was written out as a .frag '
+             'shadowing the engine uniform. Pinning suitable=True reopens '
+             'that hole.'),
+    ),
+    Mutation(
+        name='detector: drop the image-input decline',
+        path='core/detector.py',
+        find="if re.search(r'\\biChannel[0-3]\\b', code):",
+        replace='if False:',
+        selector='test_validator.SuitabilityGateTests',
+        why='MVP requires image-input shaders to be declined.',
+    ),
+    Mutation(
+        name='detector: check HLSL in comments too',
+        path='core/detector.py',
+        find='    if HLSL_LERP_RE.search(code):',
+        replace='    if HLSL_LERP_RE.search(source):',
+        selector='test_validator.SuitabilityGateTests',
+        why=('Reintroduces a false positive: conjugoth.frag documents its '
+             'origin as "original: lerp(...)" in a comment, and scanning raw '
+             'text declines a valid shader.'),
+    ),
 ]

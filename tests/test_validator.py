@@ -18,6 +18,7 @@ VS2_DIR = os.path.dirname(TESTS_DIR)
 REPO_ROOT = os.path.dirname(VS2_DIR)
 sys.path.insert(0, VS2_DIR)
 
+from core.detector import check_suitability
 from validators.validator import (
     run_validation,
     _has_uniform_declarations,
@@ -201,6 +202,89 @@ class SanityTests(unittest.TestCase):
         result = run_validation(src, 'probe')
         self.assertFalse(result['passed'])
         self.assertTrue(any('uniform' in e.lower() for e in result['errors']))
+
+
+class SuitabilityGateTests(unittest.TestCase):
+    """ADJUDICATION: the detector's suitability verdict must be ENFORCED.
+
+    The detector computed `suitable` but the CLI ignored it and converted
+    anyway. A shader redeclaring `resolution` was emitted as a .frag that
+    shadows the engine's uniform -- the external validator flags it, but only
+    if you passed --validate. These tests pin the decline reasons.
+
+    Image-input scope note: these assert only THAT a shader takes an image
+    and is declined. They deliberately say nothing about how VS-2's image
+    input works; that is an open question being revisited separately.
+    """
+
+    def test_clean_shader_is_suitable(self):
+        r = check_suitability(MINIMAL_VALID)
+        self.assertTrue(r['suitable'], 'unexpected errors: %s' % r['errors'])
+
+    def test_engine_var_redeclaration_declines(self):
+        r = check_suitability('vec2 resolution;\nvoid main(){}')
+        self.assertFalse(r['suitable'])
+        self.assertTrue(any('resolution' in e for e in r['errors']))
+
+    def test_isf_image_input_declines(self):
+        src = '/*{"INPUTS": [{"NAME": "Img", "TYPE": "image"}]}*/\nvoid main(){}'
+        r = check_suitability(src)
+        self.assertFalse(r['suitable'])
+        self.assertTrue(any('image' in e.lower() for e in r['errors']))
+
+    def test_ishadertoy_channel_declines(self):
+        src = ('void mainImage(out vec4 f, in vec2 c){'
+               ' f = vec4(texture(iChannel0, c / 10.0).rgb, 1.0); }')
+        r = check_suitability(src)
+        self.assertFalse(r['suitable'])
+        self.assertTrue(any('image input' in e for e in r['errors']))
+
+    def test_image_tex_usage_declines(self):
+        src = ('void main(){ fragColor = texture(imageTex, texCoord); }')
+        r = check_suitability(src)
+        self.assertFalse(r['suitable'])
+        self.assertTrue(any('imageTex' in e for e in r['errors']))
+
+    def test_too_many_params_declines(self):
+        params = ', '.join('{"name": "p%d", "default": 0.5}' % i
+                           for i in range(9))
+        r = check_suitability('/*{"parameters": [%s]}*/\nvoid main(){}' % params)
+        self.assertFalse(r['suitable'])
+        self.assertTrue(any('parameters' in e for e in r['errors']))
+
+    def test_hlsl_mention_in_a_comment_does_not_decline(self):
+        """A comment documenting the shader's origin must not be read as
+        unconverted HLSL.
+
+        Found by the mutation harness: `detector: check HLSL in comments too`
+        survived because nothing pinned this. The real instance is
+        converted_shaders/conjugoth.frag line 289, which carries
+        "// ... (original: lerp(blur1+blur3, ret, ret))" and is a valid
+        shader that the MVP gate must not decline.
+        """
+        src = ('/*{"parameters": [{"name": "level", "default": 0.5}]}*/\n'
+               '// Blurred blend (original: lerp(a, b, c))\n'
+               'void main() { fragColor = vec4(level); }')
+        r = check_suitability(src)
+        self.assertTrue(r['suitable'],
+                        'comment mentioning lerp() caused a false decline: %s'
+                        % r['errors'])
+
+    def test_real_hlsl_call_still_declines(self):
+        """The counterpart: an actual `lerp(` CALL in code must still be
+        caught, or the fix above would have gutted the check."""
+        src = 'void main() { fragColor = vec4(lerp(vec3(0.0), vec3(1.0), 0.5)); }'
+        r = check_suitability(src)
+        self.assertFalse(r['suitable'], 'real HLSL lerp() was not detected')
+
+    def test_suitable_is_consistent_with_errors(self):
+        """suitable must be exactly `no errors`, or the CLI gate is a lie."""
+        for src in [MINIMAL_VALID,
+                    'vec2 resolution;\nvoid main(){}',
+                    'void main(){ fragColor = texture(imageTex, texCoord); }']:
+            r = check_suitability(src)
+            self.assertEqual(r['suitable'], len(r['errors']) == 0,
+                             'suitable/errors disagree for: %r' % src[:40])
 
 
 if __name__ == '__main__':

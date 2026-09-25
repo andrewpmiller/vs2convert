@@ -51,10 +51,12 @@ Options:
     parser.add_argument("--validate", action="store_true", help="Run structural validation, exit 1 if errors found")
     parser.add_argument("--verify", action="store_true", help="Run render verification (headless OpenGL), exit 1 if fails")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be generated without writing")
+    parser.add_argument("--force", action="store_true",
+                        help="Convert even when the suitability gate declines")
 
     args = parser.parse_args()
 
-    from core.detector import detect_format
+    from core.detector import detect_format, check_suitability
     from core.generator import convert, ConversionError
     from validators.validator import run_validation
 
@@ -73,6 +75,30 @@ Options:
     if format_info.get("warnings"):
         print("[warn] Issues detected (proceeding anyway):")
         for warning in format_info["warnings"]:
+            print(f"  - {warning}")
+
+    # --- suitability gate -----------------------------------------------
+    # The detector computes a suitability verdict, but it used to be purely
+    # advisory: the CLI printed warnings and converted anyway. That let a
+    # shader redeclaring `resolution` be emitted as a .frag that shadows the
+    # engine's uniform. Unsuitable sources are now declined by default.
+    suitability = check_suitability(source)
+    if not suitability["suitable"]:
+        print()
+        print("[decline] This shader is not suitable for automated conversion:")
+        for err in suitability["errors"]:
+            print(f"  - {err}")
+        print()
+        print("[decline] No output was written. Reasons above are the ones the")
+        print("[decline] app could not resolve on its own. Fix the source, or")
+        print("[decline] convert it by hand via the vs2-shader-expert skill.")
+        if not args.force:
+            sys.exit(3)
+        print("[warn] --force given: converting anyway. The result is very")
+        print("[warn] likely to be broken; a render gate is the only real check.")
+    elif suitability.get("warnings"):
+        print("[warn] Suitability notes:")
+        for warning in suitability["warnings"]:
             print(f"  - {warning}")
 
     # Convert
