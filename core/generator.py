@@ -220,24 +220,87 @@ def _rewrite_output(source: str) -> str:
             cur += ch
     args.append(cur)
     args = [a.strip() for a in args]
-    if len(args) == 2:
-        expr = args[0]
-    elif len(args) == 4:
+    # The match regex only ever matches a `vec4(` call, so every shape below
+    # is a vec4 and the trailing arg is alpha:
+    #   vec4(r,g,b,a)      4 args
+    #   vec4(vec2,g,b)     3 args
+    #   vec4(rgb, a)       2 args
+    #   vec4(vec3)         1 arg  (no alpha)
+    if len(args) == 4:
         expr = f"vec3({args[0]}, {args[1]}, {args[2]})"
+    elif len(args) == 3:
+        expr = f"vec3({args[0]}, {args[1]}, {args[2]})"
+    elif len(args) == 2:
+        expr = args[0]
+    elif len(args) == 1:
+        expr = args[0]
     else:
-        return source  # unexpected shape: leave alone rather than corrupt it
+        return source  # unexpected shape; leave alone rather than corrupt it
     end = close_idx + 1
     while end < len(source) and source[end] in ' \t':
         end += 1
     if end < len(source) and source[end] == ';':
         end += 1
-    replacement = (
-        "{\n"
-        "    vec3 vs2Final = " + expr + ";\n"
-        "    float coloredPixels = dot(clamp(vs2Final, 0.0, 1.0), vec3(1.0));\n"
-        "    fragColor = vec4(vs2Final * color.rgb, alpha * coloredPixels);\n"
-        "}")
+    # Two different transparency conventions, and picking the wrong one is
+    # invisible to every structural check.
+    #
+    #   PROCEDURAL (no image sampling): alpha = how BRIGHT the pixel is.
+    #     float coloredPixels = dot(clamp(vs2Final,0,1), vec3(1.0));
+    #     fragColor = vec4(vs2Final * color.rgb, alpha * coloredPixels);
+    #
+    #   IMAGE-INPUT (samples imageTex): alpha = the IMAGE'S OWN alpha.
+    #     fragColor = vec4(vs2Final * color.rgb, srcAlpha * alpha);
+    #   Confirmed against all three authoritative references in
+    #   factory-references/VS2-image-input/ (texture-glitch:162,
+    #   texture-kaleidoscope:95, texture-ripple:85) - all use col.a, never
+    #   coloredPixels.
+    #
+    # Using the procedural pattern on an image shader makes alpha ~1.0
+    # wherever the sampled image is bright, so the shader renders as a solid
+    # full-bleed rectangle and ignores the image's own transparency. A real
+    # Shadertoy glitch does `texture(iChannel0, uv * 0.5)`, averaging the same
+    # half-image 20 times, so it is bright almost everywhere.
+    if _samples_image(source):
+        # Recover the source's own alpha, which is the whole point of the
+        # image pattern. `vec4(rgb, a)` arrives as 2 args and `vec4(r,g,b,a)`
+        # as 4; `vec3(rgb)` has none. Picking wrong silently drops the alpha,
+        # which is how a first attempt produced `1.0 * alpha` for a shader
+        # whose alpha came from `sum.a`.
+        if len(args) == 4:
+            alpha_expr = args[3]
+        elif len(args) == 3:
+            alpha_expr = args[2]
+        elif len(args) == 2:
+            alpha_expr = args[1]
+        elif len(args) == 1:
+            alpha_expr = '1.0'
+        else:
+            return source  # ambiguous shape; leave it rather than guess
+        replacement = ("{\n"
+                       "    vec3 vs2Final = " + expr + ";\n"
+                       "    fragColor = vec4(vs2Final * color.rgb, "
+                       + alpha_expr + " * alpha);\n"
+                       "}")
+    else:
+        replacement = (
+            "{\n"
+            "    vec3 vs2Final = " + expr + ";\n"
+            "    float coloredPixels = dot(clamp(vs2Final, 0.0, 1.0), vec3(1.0));\n"
+            "    fragColor = vec4(vs2Final * color.rgb, alpha * coloredPixels);\n"
+            "}")
     return source[:m.start()] + replacement + source[end:]
+
+
+def _samples_image(body: str) -> bool:
+    """True if the body reads VS-2's image sampler.
+
+    Matches `texture(imageTex, ...)`, `textureLod`, and the ISF accessors
+    after they have been rewritten. Comments are ignored: a shader whose
+    comment says "samples imageTex" is still procedural.
+    """
+    code = code_only(body)
+    return bool(re.search(r'\btexture\w*\s*\(\s*imageTex\b', code)
+                or re.search(r'\bimageTex\s*[,)]', code))
 
 
 def _rename_shadowed_engine_vars(source: str) -> str:
@@ -468,12 +531,27 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
         # shaders put the assignment directly in main() - see every golden
         # example - so rename the signature and rewrite the two Shadertoy
         # out/in params to the engine names.
-        def _inline(m):
-            return 'void main(void)' + m.group(1)
-        body = re.sub(
-            r'void\s+mainImage\s*\(\s*out\s+vec4\s+\w+\s*,\s*in\s+vec2\s+\w+\s*\)\s*(\{)',
-            _inline, body, count=1)
-        body = body.replace('fragCoord', 'gl_FragCoord')
+        # Capture the Shadertoy parameter NAMES, which may be anything
+        # (commonly `fragColor`/`fragCoord`, but not required), strip the
+        # signature, and rewrite every reference to the engine equivalents.
+        # Rewriting only the declaration left bodies using `f`/`c` referring
+        # to identifiers that no longer existed.
+        sig = re.compile(
+            r'void\s+mainImage\s*\(\s*out\s+vec4\s+(\w+)\s*,'
+            r'\s*in\s+vec2\s+(\w+)\s*\)\s*(\{)', re.DOTALL)
+        msig = sig.search(body)
+        if msig:
+            out_name, in_name, brace = msig.group(1), msig.group(2), msig.group(3)
+            body = sig.sub('void main(void)' + brace, body, count=1)
+            for old_name, new_name in ((out_name, 'fragColor'),
+                                       (in_name, 'gl_FragCoord')):
+                if old_name == new_name:
+                    continue
+                # Don't touch struct field access (`.name`) or declarations.
+                body = re.sub(r'(?<![\w.])' + re.escape(old_name)
+                              + r'\b', new_name, body)
+        else:
+            body = body.replace('fragCoord', 'gl_FragCoord')
     elif not re.search(r'\bvoid\s+main\s*\(', body):
         raise ConversionError("no mainImage() or main() entry point found")
 

@@ -166,6 +166,14 @@ Options:
         output_path = Path(args.output)
     else:
         output_path = source_path.with_suffix('.frag')
+        # An input that is ALREADY .frag would make the default output the
+        # input itself, and we would overwrite the file we just read. Refuse.
+        if output_path.resolve() == source_path.resolve():
+            print(f"[error] Refusing to overwrite the input file: "
+                  f"{source_path}")
+            print("[error] Pass an explicit output filename, or convert a "
+                  "source file (.fs / .shadertoy / .glsl).")
+            sys.exit(4)
 
     # Structural validation (D2 fix: always initialized)
     validation_result = {"errors": [], "warnings": []}

@@ -464,6 +464,41 @@ class RealShadertoyGlitchTests(unittest.TestCase):
             ' f = vec4(m, m, m, 1.0); }', 'Shadertoy', 'p')['frag']
         self.assertIn('(x * resolution.x) / 100.0', scaled)
 
+    def test_image_input_uses_image_alpha_not_colored_pixels(self):
+        """An image-sampling shader must take alpha from the IMAGE.
+
+        `coloredPixels` sets alpha from pixel BRIGHTNESS, which on an image
+        shader makes it ~1.0 almost everywhere - the shader renders as a solid
+        full-bleed rectangle and ignores the image's transparency. All three
+        authoritative references use col.a, never coloredPixels
+        (factory-references/VS2-image-input/: 162, :95, :85).
+        """
+        frag = convert(GLITCH, 'Shadertoy', 'glitch')['frag']
+        self.assertIn('sum.a * alpha', frag)
+        self.assertNotIn('coloredPixels', frag)
+
+    def test_procedural_shader_keeps_colored_pixels(self):
+        """The counterpart: a shader with no image sampling must be unchanged,
+        or the fix would have gutted the procedural pattern."""
+        src = ('void main(){ vec2 uv = gl_FragCoord.xy / resolution.xy;'
+               ' fragColor = vec4(uv, 0.5, 1.0); }')
+        frag = convert(src, 'PlainGLSL', 'p')['frag']
+        self.assertIn('coloredPixels', frag)
+
+    def test_mainimage_params_are_rewritten_by_name(self):
+        """Shadertoy parameter names are arbitrary. Stripping the signature
+        without rewriting the body left `f`/`c` referring to identifiers that
+        no longer existed."""
+        src = ('void mainImage(out vec4 f, in vec2 c){'
+               ' vec2 uv = c / iResolution.xy;'
+               ' vec4 s = texture(iChannel0, uv);'
+               ' f = vec4(s.rgb, s.a); }')
+        frag = convert(src, 'Shadertoy', 'p')['frag']
+        self.assertIn('gl_FragCoord', frag)
+        self.assertIn('fragColor', frag)
+        self.assertNotRegex(frag, r'\b[fc]\s*/')
+        self.assertNotIn('(c /', frag)
+
     def test_mainimage_is_inlined_into_main(self):
         """The wrapper form `mainImage(fragColor, gl_FragCoord.xy)` assigns
         fragColor only inside mainImage, so the external validator reports

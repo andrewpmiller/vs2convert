@@ -242,4 +242,27 @@ MUTATIONS = [
              'gives 0.5/1920 instead of 0.5 - a ~1000x error that still '
              'compiles, renders and validates clean.'),
     ),
+
+    # ---- output transparency pattern: image vs procedural ------------
+    Mutation(
+        name='generator: use coloredPixels for image-input shaders',
+        path='core/generator.py',
+        find='    if _samples_image(source):',
+        replace='    if False:',
+        selector='test_engine',
+        why=('coloredPixels derives alpha from pixel BRIGHTNESS, which on an '
+             'image shader is ~1.0 almost everywhere: the shader renders as a '
+             'solid rectangle and ignores the image transparency. All three '
+             'factory-references/VS2-image-input/ shaders use col.a instead.'),
+    ),
+    Mutation(
+        name='generator: drop the image alpha, hardcode 1.0',
+        path='core/generator.py',
+        find="        elif len(args) == 2:\n            alpha_expr = args[1]",
+        replace="        elif len(args) == 2:\n            alpha_expr = '1.0'",
+        selector='test_engine',
+        why=('vec4(rgb, a) arrives as 2 args. Reading 1.0 instead of args[1] '
+             'silently discarded the source alpha - which is precisely what a '
+             'first attempt did, producing `1.0 * alpha`.'),
+    ),
 ]
