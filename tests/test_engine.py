@@ -394,6 +394,7 @@ GLITCH = """float sat( float t ) { return clamp( t, 0.0, 1.0 ); }
 void mainImage( out vec4 fragColor, in vec2 fragCoord )
 {
 \tvec2 uv = fragCoord.xy / iResolution.xy;
+\t//note: /\ t=[0;0.5;1], y=[0;1;0]   <-- a bare 'y' inside a COMMENT
 \tfloat time = mod(iTime*100.0, 32.0)/110.0;
 \tfloat GLITCH = 0.1 + iMouse.x / iResolution.x;
 \tfloat r0 = sat(GLITCH);
@@ -430,10 +431,13 @@ class RealShadertoyGlitchTests(unittest.TestCase):
         every pointer-driven term. formal-spec.md:25 maps it to x/y params."""
         result = convert(GLITCH, 'Shadertoy', 'glitch')
         names = [p['name'] for p in result['params']]
-        # Only the axis the body actually reads becomes a parameter; this
-        # fixture uses iMouse.x, so y must NOT appear as an unused knob.
+        # Only the axis the body actually READS becomes a parameter. The body
+        # mentions `y` twice in ways that must NOT create a knob: as member
+        # access (`uv.y`) and inside a comment (`y=[0;1;0]`). Only iMouse.x
+        # is a real read.
         self.assertIn('x', names)
         self.assertNotIn('y', names)
+        self.assertEqual(len(names), 1, 'exactly one axis knob expected')
         self.assertNotIn('vec4(0.0))', result['frag'])
         # UNITS: Shadertoy's iMouse.xy is in PIXELS, a VS-2 knob is 0..1.
         # Emitting a bare `x` under a `/ iResolution.x` divisor would shrink
@@ -463,6 +467,38 @@ class RealShadertoyGlitchTests(unittest.TestCase):
             ' float m = iMouse.x / 100.0;'
             ' f = vec4(m, m, m, 1.0); }', 'Shadertoy', 'p')['frag']
         self.assertIn('(x * resolution.x) / 100.0', scaled)
+
+    def test_image_sample_v_is_flipped_for_vs2(self):
+        """Shadertoy and VS-2 disagree about which way image V runs.
+
+        Established EMPIRICALLY: the author ran a real Shadertoy glitch in
+        VS-2 (2026-09-25) and the image came out upside down. The skill docs
+        document no flip rule, and the factory-references image shaders are
+        VS-2-native so they carry no flip either - there is no citation for
+        this, only the observed behaviour. Recorded as such deliberately.
+
+        The flip belongs at the SAMPLE, not at the uv assignment: converted
+        shaders reuse one uv for procedural work, and flipping it at the
+        declaration would invert that too.
+        """
+        frag = convert(GLITCH, 'Shadertoy', 'glitch')['frag']
+        self.assertIn('1.0 - (', frag, 'image sample V is not flipped')
+        self.assertRegex(frag, r'texture\(\s*imageTex\s*,\s*vec2\(')
+
+    def test_procedural_uv_is_not_flipped(self):
+        """Counterpart: a shader with no image sampling must be untouched, or
+        this fix would invert every procedural shader."""
+        frag = convert('void main(){ fragColor = vec4(uv, 0.5, 1.0); }',
+                       'PlainGLSL', 'p')['frag']
+        self.assertNotIn('1.0 -', frag)
+
+    def test_sample_survives_extra_bias_argument(self):
+        """Shadertoy allows a third bias arg on texture(); it must be kept."""
+        src = ('void mainImage(out vec4 f, in vec2 c){'
+               ' f = texture(iChannel0, c / iResolution.xy, -10.0); }')
+        frag = convert(src, 'Shadertoy', 'p')['frag']
+        self.assertIn('-10.0', frag)
+        self.assertIn('1.0 - (', frag)
 
     def test_image_input_uses_image_alpha_not_colored_pixels(self):
         """An image-sampling shader must take alpha from the IMAGE.

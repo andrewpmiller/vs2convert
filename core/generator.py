@@ -386,6 +386,59 @@ def _coalesce_frag_color_writes(body: str) -> str:
     return '\n'.join(out)
 
 
+def _flip_image_sample_v(body: str) -> str:
+    """`texture(iChannel0, uv)` -> `texture(imageTex, vec2(uv.x, 1.0 - uv.y))`.
+
+    Single left-to-right pass, depth-aware, so nested calls and extra
+    arguments (Shadertoy allows a bias third arg) survive intact.
+    """
+    out = []
+    i = 0
+    n = len(body)
+    while i < n:
+        m = re.compile(r'\btexture\s*\(\s*iChannel[0-3]\b').search(body, i)
+        if not m:
+            out.append(body[i:])
+            break
+        out.append(body[i:m.start()])
+        open_idx = body.index('(', m.start())
+        depth, close_idx = 0, None
+        for j in range(open_idx, n):
+            if body[j] == '(':
+                depth += 1
+            elif body[j] == ')':
+                depth -= 1
+                if depth == 0:
+                    close_idx = j
+                    break
+        if close_idx is None:
+            out.append(body[m.start():])
+            break
+        inner = body[open_idx + 1:close_idx]
+        args, cur, d = [], '', 0
+        for ch in inner:
+            if ch == '(':
+                d += 1
+            elif ch == ')':
+                d -= 1
+            if ch == ',' and d == 0:
+                args.append(cur)
+                cur = ''
+            else:
+                cur += ch
+        args.append(cur)
+        # args[0] is the SAMPLER (iChannel0); the uv is args[1]. Taking
+        # args[0] produced texture(imageTex, vec2((imageTex).x, ...)).
+        uv = args[1].strip() if len(args) > 1 and args[1].strip() else 'texCoord'
+        rest = ', '.join(a.strip() for a in args[2:])
+        new_inner = 'imageTex, vec2((%s).x, 1.0 - (%s).y)' % (uv, uv)
+        if rest:
+            new_inner += ', ' + rest
+        out.append('texture(' + new_inner + ')')
+        i = close_idx + 1
+    return ''.join(out)
+
+
 def _build_manifest(params: list, shader_name: str) -> str:
     """params: [{'name': ..., 'default': ...}] already sanitized and clamped."""
     manifest = {
@@ -481,7 +534,18 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
                 "iChannelResolution/iChannelTime referenced: these describe "
                 "the bound slot and have no VS-2 equivalent. Any scaling or "
                 "sync built on them is not preserved.")
-        body = re.sub(r'\btexture\s*\(\s*iChannel[0-3]\b', 'texture(imageTex', body)
+        # Y ORIENTATION. Shadertoy and VS-2 disagree about which way image V
+        # runs, so a Shadertoy image shader converted verbatim renders its
+        # image upside down in VS-2. Established empirically by the author
+        # running a real Shadertoy glitch in VS-2 (2026-09-25) - NOT by a spec
+        # line: the skill docs document no flip rule, and
+        # factory-references/VS2-image-input/ are VS-2-native so they carry no
+        # flip either. Do not add a second flip if this ever looks wrong.
+        #
+        # Flipped at the sample site, not at the uv assignment: a converted
+        # shader typically reuses one uv for procedural work too, and
+        # flipping it at the declaration would invert that as well.
+        body = _flip_image_sample_v(body)
         body = re.sub(r'\biChannel[0-3]\b', 'imageTex', body)
         body = re.sub(r'\biChannelResolution\b', 'imageResolution', body)
         body = re.sub(r'\biChannelTime\b', 'time', body)
@@ -510,8 +574,14 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
         body = re.sub(r'\biMouse\b',
                       'vec4(x * resolution.x, y * resolution.y, 0.0, 0.0)',
                       body)
+        # Bare identifier only, in CODE only. `\by\b` also matches member
+        # access (`uv.y`, which nearly every shader has) and, on the real
+        # glitch shader, the comment `//note: /\ t=[0;0.5;1], y=[0;1;0]`.
+        # Both produced a spurious `y` knob. Strip comments first, then
+        # exclude member access.
+        _code = code_only(body)
         for _ax in ('x', 'y'):
-            if re.search(r'\b%s\b' % _ax, body):
+            if re.search(r'(?<![\w.])' + _ax + r'\b', _code):
                 mouse_axes.append(_ax)
         report['warnings'].append(
             "iMouse -> x / y manifest parameters (formal-spec.md:25), "

@@ -265,4 +265,27 @@ MUTATIONS = [
              'silently discarded the source alpha - which is precisely what a '
              'first attempt did, producing `1.0 * alpha`.'),
     ),
+
+    # ---- image Y orientation -----------------------------------------
+    Mutation(
+        name='generator: drop the image Y flip',
+        path='core/generator.py',
+        find='        body = _flip_image_sample_v(body)',
+        replace='        pass',
+        selector='test_engine',
+        why=('Shadertoy and VS-2 disagree about image V direction, so a '
+             'converted image shader renders its image upside down in VS-2. '
+             'Empirically confirmed by the author running a real Shadertoy '
+             'glitch in VS-2 on 2026-09-25 - not documented in the spec.'),
+    ),
+    Mutation(
+        name='generator: detect mouse axes in comments',
+        path='core/generator.py',
+        find='        _code = code_only(body)',
+        replace='        _code = body',
+        selector='test_engine',
+        why=('The real glitch shader has "//note: /\\ t=[0;0.5;1], y=[0;1;0]" '
+             '- a bare `y` in a comment. Scanning raw text added a phantom y '
+             'knob the shader never uses.'),
+    ),
 ]
