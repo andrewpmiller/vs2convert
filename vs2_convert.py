@@ -122,10 +122,20 @@ Options:
                 for error in verification_result["errors"]:
                     print(f"  - {error}")
                 sys.exit(1)
-            print("[info] Render verification passed")
+            m = verification_result.get("metrics", {})
+            print("[info] Render verification passed "
+                  "(mean=%s std=%s alpha=%s motion=%s)"
+                  % (m.get('mean'), m.get('std'), m.get('alpha'),
+                     m.get('motion')))
         except ImportError:
-            print("[warn] Render verification requires moderngl + numpy + Pillow")
-            print("[info] Skipping render verification")
+            # Must not exit 0 here. The old renderer could not fail, and a
+            # silent skip reads like a pass in CI. Say the gate did not run.
+            print("[error] Render verification could not run: "
+                  "moderngl + numpy + Pillow are required "
+                  "(pip install 'vs2-convert[render]')")
+            print("[error] --verify was requested but did not execute. "
+                  "Treating as FAILED so it cannot be mistaken for a pass.")
+            sys.exit(2)
 
     if args.dry_run:
         print("")
