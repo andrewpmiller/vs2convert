@@ -134,6 +134,35 @@ class ConvertIsfTests(unittest.TestCase):
         frag = convert(ISF, 'ISF', 'probe')['frag']
         self.assertIn('vec4(0.3, 0.7, 0.9, 1.0)', frag)
 
+    def test_seven_param_budget_enforced(self):
+        """Hard rule 2: at most 7 manifest parameters.
+
+        Found by the mutation harness - `generator: drop the 7-parameter
+        budget` survived, meaning nothing asserted this. VS-2 will not load
+        a shader declaring more than 7, so silently emitting 8 is a hard
+        failure at runtime, not a cosmetic overrun.
+        """
+        # Ten float inputs, no speed keywords, so none get baked for other
+        # reasons and the budget is the only thing that can cap the count.
+        inputs = ', '.join(
+            '{"NAME": "Level%d", "TYPE": "float", "DEFAULT": 0.5, '
+            '"MIN": 0.0, "MAX": 1.0}' % i for i in range(10))
+        src = '/*{\n "INPUTS": [%s]\n}*/\nvoid main() {\n' % inputs
+        src += '    vec2 uv = gl_FragCoord.xy / RENDERSIZE.xy;\n'
+        src += '    float v = uv.x;\n'
+        src += '    gl_FragColor = vec4(v, v, v, 1.0);\n}\n'
+
+        result = convert(src, 'ISF', 'probe')
+        names = [p['name'] for p in result['params']]
+        self.assertLessEqual(
+            len(names), 7,
+            'emitted %d parameters, over the 7-param budget: %s'
+            % (len(names), names))
+        self.assertTrue(
+            any('budget' in b for b in result['baked']),
+            'over-budget inputs must be reported as baked, got: %s'
+            % result['baked'])
+
     def test_magnitude_fidelity_round_trip(self):
         """The knob default in the emitted manifest, substituted into the
         emitted body formula, must reproduce the source's original DEFAULT.
