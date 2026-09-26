@@ -647,6 +647,21 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
                 # Don't touch struct field access (`.name`) or declarations.
                 body = re.sub(r'(?<![\w.])' + re.escape(old_name)
                               + r'\b', new_name, body)
+            # `fragCoord` is now `texCoord`, which is ALREADY a 0..1 uv, but
+            # the Shadertoy body still multiplies by and divides by the render
+            # size to construct one. Cancel the shared factor:
+            #   (texCoord * 2.0 - resolution.xy) / resolution.y  ==  texCoord*2 - 1
+            # Author-verified 2026-09-25: the reduced form renders and
+            # animates; the unreduced one renders flat or black.
+            for _ in range(3):
+                body = re.sub(
+                    r'\(\s*texCoord\s*\*\s*([\d.]+)\s*-\s*'
+                    r'resolution\s*\.\s*xy\s*\)\s*/\s*resolution\s*\.\s*y',
+                    r'(texCoord * \1 - 1.0)', body)
+                body = re.sub(
+                    r'\(\s*texCoord\s*-\s*([\d.]+)\s*\*\s*'
+                    r'resolution\s*\.\s*xy\s*\)\s*/\s*resolution\s*\.\s*y',
+                    r'(texCoord - \1)', body)
             # A Shadertoy body that divided by resolution to normalise now
             # divides an already-normalised uv again. Cancel the division so the
             # value matches what the source computed.
@@ -927,6 +942,22 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
                           'vec4(0.5, 0.5, 0.0, 0.0)' if mouse_is_vec4
                           else 'vec2(0.5)', body)
             report['warnings'].append("MOUSE -> static centre")
+    # Shadertoy helper functions take the fragment coordinate as a vec2 uv
+    # parameter - `float raymarch(vec3 from, vec3 dir, vec2 fragCoord, ...)`.
+    # The mainImage in-param is renamed above; these are ordinary helpers and
+    # were missed, so they kept calling an identifier VS-2 no longer defines.
+    # Same reasoning: the parameter IS a 0..1 uv, so texCoord is the right
+    # name, and `fragCoord / resolution.xy` inside them becomes texCoord.
+    body = re.sub(
+        r'\bin\s+vec2\s+fragCoord\b', 'in vec2 texCoord', body)
+    body = re.sub(r'(?<![\w.])fragCoord(?![\w])', 'texCoord', body)
+
+    # Prose mentions, e.g. "// Replaced fragCoord and iResolution with
+    # gl_FragCoord and RENDERSIZE". Not code, but leaving it makes a
+    # completeness check for gl_FragCoord impossible to run over the corpus.
+    body = re.sub(r'(//[^\n]*?)\bgl_FragCoord\b',
+                  r'\1the fragment coordinate', body)
+
     # RENDERSIZE is the render target size in pixels. The normal way an ISF
     # source turns the fragment coordinate into a 0..1 uv is
     # `gl_FragCoord.xy / RENDERSIZE.xy`. VS-2's `texCoord` IS that 0..1 uv
@@ -947,6 +978,740 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
     body = re.sub(
         r'gl_FragCoord\s*/\s*RENDERSIZE\b', 'texCoord', body)
     body = re.sub(r'\bRENDERSIZE\b', 'resolution', body)
+
+    # The composed patterns above run before the rename, so they only see
+    # RENDERSIZE. A source may already have been normalised and spell it
+    # `resolution` (a pre-converted or hand-edited file). Handle that form
+    # now that both spellings have become `resolution`.
+    body = re.sub(
+        r'gl_FragCoord\s*\.\s*xy\s*/\s*resolution\s*\.\s*xy',
+        'texCoord', body)
+    body = re.sub(
+        r'gl_FragCoord\s*\.\s*xy\s*/\s*resolution\b',
+        'texCoord', body)
+
+    # texCoord is already 0..1, so a divide by the render size applied to it
+    # is a no-op that scales the shader down to nothing. It appears when a
+    # source wrote `texCoord / RENDERSIZE.xy` itself, or when a helper's
+    # fragCoord parameter was renamed to texCoord above while the divide
+    # beside it survived. Must run AFTER RENDERSIZE -> resolution.
+    for _ in range(3):
+        body = re.sub(
+            r'texCoord\s*/\s*resolution\.xy', 'texCoord', body)
+
+
+    params = []
+    for name, info in raw_params.items():
+        clean = _snake(name)
+        while clean in ENGINE_VARS:
+            clean += '_amt'
+        default = min(1.0, max(0.0, float(info['default'])))
+        if any(kw in clean for kw in SPEED_KEYWORDS):
+            body = re.sub(r'\b' + re.escape(name) + r'\b',
+                          _fmt_num(info['default']), body)
+            report['baked'].append(
+                f"{name} -> {_fmt_num(info['default'])} (speed baked per rule 4)")
+            continue
+        if default != float(info['default']):
+            report['warnings'].append(
+                f"param '{clean}': default {info['default']} clamped to "
+                f"{default} (knob range 0..1)")
+        if clean != name:
+            body = re.sub(r'\b' + re.escape(name) + r'\b', clean, body)
+        params.append({'name': clean, 'default': default})
+
+    for _ax in mouse_axes:
+        if not any(p['name'] == _ax for p in params):
+            if len(params) >= MAX_PARAMS:
+                report['warnings'].append(
+                    "iMouse axis '%s' dropped: over the 7-param budget" % _ax)
+                body = re.sub(r'\b%s\b' % _ax, '0.5', body)
+                continue
+            params.append({'name': _ax, 'default': 0.5})
+    return body, params
+
+
+def _convert_glslsandbox(source: str, report: dict, meta: dict = None) -> tuple:
+    """uniform time/resolution/mouse style source."""
+    body = _strip_uniforms(source)
+    if re.search(r'\bsurfacePosition\b', body):
+        body = re.sub(
+            r'\bsurfacePosition\b',
+            'vec2(texCoord.x, texCoord.y * resolution.y / resolution.x)',
+            body)
+    if re.search(r'\bmouse\b', body, re.IGNORECASE):
+        body = re.sub(r'\bmouse\b', 'vec2(x, y)', body)
+        report['warnings'].append("mouse -> vec2(x, y) pan parameters")
+        pan_params = [{'name': 'x', 'default': 0.5},
+                      {'name': 'y', 'default': 0.5}]
+    else:
+        pan_params = []
+    body = _rename_shadowed_engine_vars(body)
+    body = re.sub(r'\bgl_FragColor\b', 'fragColor', body)
+    body = _rewrite_output(body)
+    body = _ensure_precision(body)
+    if not re.search(r'\bvoid\s+main\s*\(', body):
+        raise ConversionError("no main() entry point found")
+    return body, pan_params
+
+
+
+def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
+    """Returns (body, manifest_params). Parses the ISF INPUTS block."""
+    inputs = None
+    m = MANIFEST_BLOCK_RE.search(source)
+    if m:
+        try:
+            header = json.loads(m.group(1).strip())
+            inputs = header.get('INPUTS', [])
+        except (json.JSONDecodeError, ValueError):
+            inputs = None
+    if not inputs:
+        raise ConversionError("ISF INPUTS block not found or not parseable")
+
+    # --- hard gates before any transformation ---
+    header_all = {}
+    if m:
+        try:
+            header_all = json.loads(m.group(1).strip())
+        except (json.JSONDecodeError, ValueError):
+            header_all = {}
+    if any(inp.get('TARGET') for inp in inputs) or \
+            any(p.get('TARGET') for p in header_all.get('PASSES', [])):
+        raise ConversionError(
+            "feedback buffer (ISF TARGET input/pass): VS-2 is single-pass "
+            "with no feedback; convert by hand via the vs2-shader-expert skill")
+    # BUNDLED image resources: a top-level "IMPORTED" dict naming files the
+    # composition ships with, e.g. {"blendImage": {"PATH": "Hexagon.tiff"}}.
+    # Per docs.isf.video/ref_json and the canonical Test-ImportedImage.fs.
+    # These are pixel data travelling with the .fs; VS-2 has no equivalent,
+    # so refuse rather than silently drop the blend.
+    #
+    # USAGE, NOT DECLARATION. Only refuse when the body actually SAMPLES an
+    # imported resource. Declaring one is not the same as using one:
+    # `phreax twisted carbon.fs` declares TEXTURE_0 in IMPORTED but its only
+    # reference is inside a `//` comment, so it converts fine without one.
+    # The first version of this gate keyed on the manifest alone and declined
+    # a perfectly good shader - caught by running the 41-source ISF corpus,
+    # not by any test. Same error class as the earlier blanket image-input
+    # decline: refusing on a structural fact instead of actual usage.
+    _imported = header_all.get('IMPORTED') if isinstance(header_all, dict) else None
+    if _imported:
+        _body = code_only(source)
+        _used = [n for n in sorted(_imported)
+                 if re.search(r'\b' + re.escape(str(n)) + r'\b', _body)]
+        if _used:
+            raise ConversionError(
+                f"bundled image resources in IMPORTED ({', '.join(_used[:4])}): "
+                f"the body samples them, and they are image files shipped with "
+                f"the .fs, so VS-2 has nowhere to put them. Supply the image in "
+                f"VS-2 instead, or convert by hand via the vs2-shader-expert "
+                f"skill")
+        report['warnings'].append(
+            "IMPORTED declares %d image resource(s) that the body never "
+            "samples, so they were dropped. Harmless, but check the source if "
+            "that is not expected." % len(_imported))
+
+    # Non-ISF GLSL texture calls. Genuinely unrepresentable: these imply a
+    # multi-pass merge, which VS-2 does not have.
+    if re.search(r'\btexture2D\s*\(|\btex2D\s*\(', source):
+        raise ConversionError(
+            "bundled texture input (texture2D/tex2D): hard gate; convert by "
+            "hand via the vs2-shader-expert skill")
+
+    body = source[m.end():] if m else source
+    body = _strip_uniforms(body)
+
+    # --- classify inputs: knob vs baked-to-default constant ---
+    manifest = []
+    baked = {}
+    used_names = set()
+    seen_image = False
+    _image_inputs = []
+    for inp in inputs:
+        name = inp.get('NAME', '')
+        itype = inp.get('TYPE', 'float')
+        default = inp.get('DEFAULT', 0.0)
+        if itype == 'image':
+            # An ISF `TYPE: image` input is not an image the converter has to
+            # supply. It is the shader declaring that it REQUIRES an image -
+            # the same role as a Shadertoy iChannel0 read. VS-2 satisfies it
+            # from the layer's configured image via `imageTex`, and ignores a
+            # configured image for shaders that do not sample one.
+            #
+            # So: do not turn it into a manifest parameter (formal-spec.md:
+            # "No image parameter is declared in the manifest. The image is
+            # implicit."), and do not reject it. The body samples whatever
+            # sampler the source used; rename to imageTex so it resolves
+            # against the engine's binding.
+            report['warnings'].append(
+                f"input '{name}' is an image: the converted shader samples "
+                f"imageTex, which VS-2 binds from the image configured on the "
+                f"layer. It needs an image set in VS-2 to show anything.")
+            seen_image = True
+            _image_inputs.append(str(name))
+            continue
+        clean = _snake(name)
+        while clean in used_names or clean in ENGINE_VARS:
+            clean += '_amt'
+        if itype != 'float':
+            if isinstance(default, (list, tuple)) and len(default) == 4:
+                literal = ("vec4(" + ", ".join(_fmt_num(v) for v in default)
+                           + ")")
+            elif isinstance(default, (list, tuple)) and len(default) == 2:
+                literal = f"vec2({default[0]}, {default[1]})"
+            elif default is True or default is False:
+                literal = 'true' if default else 'false'
+            elif itype == 'long':
+                values = inp.get('VALUES', [])
+                literal = (str(values.index(default)) if default in values
+                           else '0')
+            elif isinstance(default, str):
+                literal = '0'
+                report['warnings'].append(
+                    f"input '{name}' (type {itype}, default '{default}') "
+                    f"baked to 0 - not expressible in GLSL")
+            else:
+                literal = _fmt_num(default)
+            baked[name] = literal
+            report['warnings'].append(
+                f"input '{name}' (type {itype}) baked to {literal}")
+            continue
+        if any(kw in clean for kw in SPEED_KEYWORDS):
+            baked[name] = _fmt_num(default)
+            report['baked'].append(
+                f"{name} -> {_fmt_num(default)} (speed baked per rule 4)")
+            continue
+        if len(manifest) >= MAX_PARAMS:
+            baked[name] = _fmt_num(default)
+            report['baked'].append(
+                f"{name} -> {_fmt_num(default)} (over 7-param budget)")
+            continue
+        lo = float(inp.get('MIN', 0.0))
+        hi = float(inp.get('MAX', 1.0))
+        dflt = float(default)
+        if hi <= lo:
+            lo, hi = 0.0, 1.0
+        knob = min(1.0, max(0.0, (dflt - lo) / (hi - lo)))
+        manifest.append({'name': clean, 'default': knob,
+                         '_lo': lo, '_hi': hi, '_orig': name})
+        used_names.add(clean)
+        baked[name] = None  # marker: kept as knob
+
+    # An ISF that declares an image input almost certainly samples a sampler.
+    # ISF spells the sampler as `sampler_main`/`sampler_image`/`sampler`, or
+    # uses an image uniform directly; all of them become the engine's
+    # imageTex, which VS-2 binds from the layer's configured image.
+    # MULTIPLE distinct image inputs cannot be represented. VS-2 binds ONE
+    # image to imageTex, so N image inputs would all collapse onto the same
+    # sampler - and the shader passes them to different places, so the result
+    # is not merely imprecise, it references samplers that were never declared
+    # and will not compile. Real case: GLSLOP developer-k0rz1pe2.fs declares
+    # six (src0..src5) and passed each to a different call.
+    #
+    # This is the ISF counterpart of the Shadertoy multi-channel gate, and it
+    # rests on the same evidence: formal-spec.md:26 and :274 map every image
+    # input to a SINGLE sampler, imageTex.
+    if len(_image_inputs) > 1:
+        raise ConversionError(
+            "declares %d distinct image inputs (%s): VS-2 binds a single "
+            "image to imageTex, so they cannot all be preserved. Convert by "
+            "hand via the vs2-shader-expert skill"
+            % (len(_image_inputs), ', '.join(_image_inputs[:4])))
+
+    if seen_image:
+        # ISF image accessors (docs.isf.video/ref_json): IMG_NORM_PIXEL(name, uv)
+        # and IMG_THIS_PIXEL(name) read the image named in INPUTS. VS-2 exposes a
+        # single sampler, imageTex, so every one of these becomes a texture()
+        # call against it. Leaving them in would emit a shader that cannot
+        # compile - these are ISF host functions, not GLSL.
+        body = re.sub(r'\bIMG_NORM_PIXEL\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
+        body = re.sub(r'\bIMG_THIS_PIXEL\s*\(\s*\w+\s*\)', 'texture(imageTex, texCoord)', body)
+        body = re.sub(r'\bIMG_PIXEL\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
+        body = re.sub(r'\btexture2D\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
+        body = re.sub(r'\btexture\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
+
+    # --- ISF builtins ---
+    if re.search(r'\bPASSINDEX\b', body):
+        if re.search(r'\bbuffer[A-D]\b|\bBuffer[A-D]\b|\bfeedback\b', body):
+            raise ConversionError(
+                "multi-pass feedback (buffer/feedback refs): VS-2 is "
+                "single-pass; convert by hand via the vs2-shader-expert skill")
+        # project onto the FINAL pass (the composite that writes fragColor);
+        # count comes from the header PASSES array, default 2
+        passes = 1
+        passes = max(1, len(header_all.get('PASSES', [])) or 1)
+        final_pass = str(passes - 1)
+        body = re.sub(r'\bPASSINDEX\b', final_pass, body)
+        report['warnings'].append(
+            f"PASSINDEX -> {final_pass} (single-pass projection onto the "
+            f"final pass of {passes})")
+    if re.search(r'\bMOUSE\b', body):
+        mouse_is_vec4 = bool(re.search(
+            r'uniform\s+vec4\s+MOUSE\b', source))
+        mouse_expr = ('vec4(x, y, 0.0, 0.0)' if mouse_is_vec4
+                      else 'vec2(x, y)')
+        if len(manifest) + 2 <= MAX_PARAMS and 'x' not in used_names \
+                and 'y' not in used_names:
+            body = re.sub(r'\bMOUSE\b', mouse_expr, body)
+            manifest.append({'name': 'x', 'default': 0.5})
+            manifest.append({'name': 'y', 'default': 0.5})
+            used_names.update({'x', 'y'})
+            report['warnings'].append(
+                f"MOUSE -> {mouse_expr} pan parameters")
+        else:
+            body = re.sub(r'\bMOUSE\b',
+                          'vec4(0.5, 0.5, 0.0, 0.0)' if mouse_is_vec4
+                          else 'vec2(0.5)', body)
+            report['warnings'].append("MOUSE -> static centre")
+    # Shadertoy helper functions take the fragment coordinate as a vec2 uv
+    # parameter - `float raymarch(vec3 from, vec3 dir, vec2 fragCoord, ...)`.
+    # The mainImage in-param is renamed above; these are ordinary helpers and
+    # were missed, so they kept calling an identifier VS-2 no longer defines.
+    # Same reasoning: the parameter IS a 0..1 uv, so texCoord is the right
+    # name, and `fragCoord / resolution.xy` inside them becomes texCoord.
+    body = re.sub(
+        r'\bin\s+vec2\s+fragCoord\b', 'in vec2 texCoord', body)
+    body = re.sub(r'(?<![\w.])fragCoord(?![\w])', 'texCoord', body)
+
+    # Prose mentions, e.g. "// Replaced fragCoord and iResolution with
+    # gl_FragCoord and RENDERSIZE". Not code, but leaving it makes a
+    # completeness check for gl_FragCoord impossible to run over the corpus.
+    body = re.sub(r'(//[^\n]*?)\bgl_FragCoord\b',
+                  r'\1the fragment coordinate', body)
+
+    # RENDERSIZE is the render target size in pixels. The normal way an ISF
+    # source turns the fragment coordinate into a 0..1 uv is
+    # `gl_FragCoord.xy / RENDERSIZE.xy`. VS-2's `texCoord` IS that 0..1 uv
+    # already, so the whole expression becomes `texCoord`.
+    #
+    # Leaving it as gl_FragCoord/resolution is NOT equivalent: it depends on
+    # gl_FragCoord behaving as it does on the desktop GL the source assumed.
+    # A raymarched ISF converted this way rendered a BLACK SCREEN in VS-2 and
+    # appeared the instant the line used `texCoord` (author-verified,
+    # 2026-09-25). Do this substitution BEFORE RENDERSIZE -> resolution, so
+    # the composed pattern is still recognisable.
+    body = re.sub(
+        r'gl_FragCoord\s*\.\s*xy\s*/\s*RENDERSIZE\s*\.\s*xy', 'texCoord', body)
+    body = re.sub(
+        r'gl_FragCoord\s*\.\s*xy\s*/\s*RENDERSIZE\b', 'texCoord', body)
+    body = re.sub(
+        r'gl_FragCoord\s*/\s*RENDERSIZE\s*\.\s*xy', 'texCoord', body)
+    body = re.sub(
+        r'gl_FragCoord\s*/\s*RENDERSIZE\b', 'texCoord', body)
+    body = re.sub(r'\bRENDERSIZE\b', 'resolution', body)
+
+    # A source that normalised as `gl_FragCoord.xy / RENDERSIZE.xy` is fully
+    # reduced to texCoord above. But `fragCoord / resolution.xy` inside a
+    # helper, or a `texCoord / RENDERSIZE.xy` the source wrote directly, is
+    # still a divide by the size applied to an already-normalised uv. Cancel it.
+    for _ in range(3):
+        body = re.sub(
+            r'texCoord\s*/\s*resolution\.xy', 'texCoord', body)
+    # texCoord is already 0..1, so a divide by the render size applied to it
+    # is a no-op that scales the shader down to nothing. It appears when a
+    # source wrote `texCoord / RENDERSIZE.xy` itself, or when a helper's
+    # fragCoord parameter was renamed to texCoord above while the divide
+    # beside it survived. Must run AFTER RENDERSIZE -> resolution.
+    for _ in range(3):
+        body = re.sub(
+            r'texCoord\s*/\s*resolution\.xy', 'texCoord', body)
+
+
+    params = []
+    for name, info in raw_params.items():
+        clean = _snake(name)
+        while clean in ENGINE_VARS:
+            clean += '_amt'
+        default = min(1.0, max(0.0, float(info['default'])))
+        if any(kw in clean for kw in SPEED_KEYWORDS):
+            body = re.sub(r'\b' + re.escape(name) + r'\b',
+                          _fmt_num(info['default']), body)
+            report['baked'].append(
+                f"{name} -> {_fmt_num(info['default'])} (speed baked per rule 4)")
+            continue
+        if default != float(info['default']):
+            report['warnings'].append(
+                f"param '{clean}': default {info['default']} clamped to "
+                f"{default} (knob range 0..1)")
+        if clean != name:
+            body = re.sub(r'\b' + re.escape(name) + r'\b', clean, body)
+        params.append({'name': clean, 'default': default})
+
+    for _ax in mouse_axes:
+        if not any(p['name'] == _ax for p in params):
+            if len(params) >= MAX_PARAMS:
+                report['warnings'].append(
+                    "iMouse axis '%s' dropped: over the 7-param budget" % _ax)
+                body = re.sub(r'\b%s\b' % _ax, '0.5', body)
+                continue
+            params.append({'name': _ax, 'default': 0.5})
+    return body, params
+
+
+def _convert_glslsandbox(source: str, report: dict, meta: dict = None) -> tuple:
+    """uniform time/resolution/mouse style source."""
+    body = _strip_uniforms(source)
+    if re.search(r'\bsurfacePosition\b', body):
+        body = re.sub(
+            r'\bsurfacePosition\b',
+            'vec2(texCoord.x, texCoord.y * resolution.y / resolution.x)',
+            body)
+    if re.search(r'\bmouse\b', body, re.IGNORECASE):
+        body = re.sub(r'\bmouse\b', 'vec2(x, y)', body)
+        report['warnings'].append("mouse -> vec2(x, y) pan parameters")
+        pan_params = [{'name': 'x', 'default': 0.5},
+                      {'name': 'y', 'default': 0.5}]
+    else:
+        pan_params = []
+    body = _rename_shadowed_engine_vars(body)
+    body = re.sub(r'\bgl_FragColor\b', 'fragColor', body)
+    body = _rewrite_output(body)
+    body = _ensure_precision(body)
+    if not re.search(r'\bvoid\s+main\s*\(', body):
+        raise ConversionError("no main() entry point found")
+    return body, pan_params
+
+
+
+def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
+    """Returns (body, manifest_params). Parses the ISF INPUTS block."""
+    inputs = None
+    m = MANIFEST_BLOCK_RE.search(source)
+    if m:
+        try:
+            header = json.loads(m.group(1).strip())
+            inputs = header.get('INPUTS', [])
+        except (json.JSONDecodeError, ValueError):
+            inputs = None
+    if not inputs:
+        raise ConversionError("ISF INPUTS block not found or not parseable")
+
+    # --- hard gates before any transformation ---
+    header_all = {}
+    if m:
+        try:
+            header_all = json.loads(m.group(1).strip())
+        except (json.JSONDecodeError, ValueError):
+            header_all = {}
+    if any(inp.get('TARGET') for inp in inputs) or \
+            any(p.get('TARGET') for p in header_all.get('PASSES', [])):
+        raise ConversionError(
+            "feedback buffer (ISF TARGET input/pass): VS-2 is single-pass "
+            "with no feedback; convert by hand via the vs2-shader-expert skill")
+    # BUNDLED image resources: a top-level "IMPORTED" dict naming files the
+    # composition ships with, e.g. {"blendImage": {"PATH": "Hexagon.tiff"}}.
+    # Per docs.isf.video/ref_json and the canonical Test-ImportedImage.fs.
+    # These are pixel data travelling with the .fs; VS-2 has no equivalent,
+    # so refuse rather than silently drop the blend.
+    #
+    # USAGE, NOT DECLARATION. Only refuse when the body actually SAMPLES an
+    # imported resource. Declaring one is not the same as using one:
+    # `phreax twisted carbon.fs` declares TEXTURE_0 in IMPORTED but its only
+    # reference is inside a `//` comment, so it converts fine without one.
+    # The first version of this gate keyed on the manifest alone and declined
+    # a perfectly good shader - caught by running the 41-source ISF corpus,
+    # not by any test. Same error class as the earlier blanket image-input
+    # decline: refusing on a structural fact instead of actual usage.
+    _imported = header_all.get('IMPORTED') if isinstance(header_all, dict) else None
+    if _imported:
+        _body = code_only(source)
+        _used = [n for n in sorted(_imported)
+                 if re.search(r'\b' + re.escape(str(n)) + r'\b', _body)]
+        if _used:
+            raise ConversionError(
+                f"bundled image resources in IMPORTED ({', '.join(_used[:4])}): "
+                f"the body samples them, and they are image files shipped with "
+                f"the .fs, so VS-2 has nowhere to put them. Supply the image in "
+                f"VS-2 instead, or convert by hand via the vs2-shader-expert "
+                f"skill")
+        report['warnings'].append(
+            "IMPORTED declares %d image resource(s) that the body never "
+            "samples, so they were dropped. Harmless, but check the source if "
+            "that is not expected." % len(_imported))
+
+    # Non-ISF GLSL texture calls. Genuinely unrepresentable: these imply a
+    # multi-pass merge, which VS-2 does not have.
+    if re.search(r'\btexture2D\s*\(|\btex2D\s*\(', source):
+        raise ConversionError(
+            "bundled texture input (texture2D/tex2D): hard gate; convert by "
+            "hand via the vs2-shader-expert skill")
+
+    body = source[m.end():] if m else source
+    body = _strip_uniforms(body)
+
+    # --- classify inputs: knob vs baked-to-default constant ---
+    manifest = []
+    baked = {}
+    used_names = set()
+    seen_image = False
+    _image_inputs = []
+    for inp in inputs:
+        name = inp.get('NAME', '')
+        itype = inp.get('TYPE', 'float')
+        default = inp.get('DEFAULT', 0.0)
+        if itype == 'image':
+            # An ISF `TYPE: image` input is not an image the converter has to
+            # supply. It is the shader declaring that it REQUIRES an image -
+            # the same role as a Shadertoy iChannel0 read. VS-2 satisfies it
+            # from the layer's configured image via `imageTex`, and ignores a
+            # configured image for shaders that do not sample one.
+            #
+            # So: do not turn it into a manifest parameter (formal-spec.md:
+            # "No image parameter is declared in the manifest. The image is
+            # implicit."), and do not reject it. The body samples whatever
+            # sampler the source used; rename to imageTex so it resolves
+            # against the engine's binding.
+            report['warnings'].append(
+                f"input '{name}' is an image: the converted shader samples "
+                f"imageTex, which VS-2 binds from the image configured on the "
+                f"layer. It needs an image set in VS-2 to show anything.")
+            seen_image = True
+            _image_inputs.append(str(name))
+            continue
+        clean = _snake(name)
+        while clean in used_names or clean in ENGINE_VARS:
+            clean += '_amt'
+        if itype != 'float':
+            if isinstance(default, (list, tuple)) and len(default) == 4:
+                literal = ("vec4(" + ", ".join(_fmt_num(v) for v in default)
+                           + ")")
+            elif isinstance(default, (list, tuple)) and len(default) == 2:
+                literal = f"vec2({default[0]}, {default[1]})"
+            elif default is True or default is False:
+                literal = 'true' if default else 'false'
+            elif itype == 'long':
+                values = inp.get('VALUES', [])
+                literal = (str(values.index(default)) if default in values
+                           else '0')
+            elif isinstance(default, str):
+                literal = '0'
+                report['warnings'].append(
+                    f"input '{name}' (type {itype}, default '{default}') "
+                    f"baked to 0 - not expressible in GLSL")
+            else:
+                literal = _fmt_num(default)
+            baked[name] = literal
+            report['warnings'].append(
+                f"input '{name}' (type {itype}) baked to {literal}")
+            continue
+        if any(kw in clean for kw in SPEED_KEYWORDS):
+            baked[name] = _fmt_num(default)
+            report['baked'].append(
+                f"{name} -> {_fmt_num(default)} (speed baked per rule 4)")
+            continue
+        if len(manifest) >= MAX_PARAMS:
+            baked[name] = _fmt_num(default)
+            report['baked'].append(
+                f"{name} -> {_fmt_num(default)} (over 7-param budget)")
+            continue
+        lo = float(inp.get('MIN', 0.0))
+        hi = float(inp.get('MAX', 1.0))
+        dflt = float(default)
+        if hi <= lo:
+            lo, hi = 0.0, 1.0
+        knob = min(1.0, max(0.0, (dflt - lo) / (hi - lo)))
+        manifest.append({'name': clean, 'default': knob,
+                         '_lo': lo, '_hi': hi, '_orig': name})
+        used_names.add(clean)
+        baked[name] = None  # marker: kept as knob
+
+    # An ISF that declares an image input almost certainly samples a sampler.
+    # ISF spells the sampler as `sampler_main`/`sampler_image`/`sampler`, or
+    # uses an image uniform directly; all of them become the engine's
+    # imageTex, which VS-2 binds from the layer's configured image.
+    # MULTIPLE distinct image inputs cannot be represented. VS-2 binds ONE
+    # image to imageTex, so N image inputs would all collapse onto the same
+    # sampler - and the shader passes them to different places, so the result
+    # is not merely imprecise, it references samplers that were never declared
+    # and will not compile. Real case: GLSLOP developer-k0rz1pe2.fs declares
+    # six (src0..src5) and passed each to a different call.
+    #
+    # This is the ISF counterpart of the Shadertoy multi-channel gate, and it
+    # rests on the same evidence: formal-spec.md:26 and :274 map every image
+    # input to a SINGLE sampler, imageTex.
+    if len(_image_inputs) > 1:
+        raise ConversionError(
+            "declares %d distinct image inputs (%s): VS-2 binds a single "
+            "image to imageTex, so they cannot all be preserved. Convert by "
+            "hand via the vs2-shader-expert skill"
+            % (len(_image_inputs), ', '.join(_image_inputs[:4])))
+
+    if seen_image:
+        # ISF image accessors (docs.isf.video/ref_json): IMG_NORM_PIXEL(name, uv)
+        # and IMG_THIS_PIXEL(name) read the image named in INPUTS. VS-2 exposes a
+        # single sampler, imageTex, so every one of these becomes a texture()
+        # call against it. Leaving them in would emit a shader that cannot
+        # compile - these are ISF host functions, not GLSL.
+        body = re.sub(r'\bIMG_NORM_PIXEL\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
+        body = re.sub(r'\bIMG_THIS_PIXEL\s*\(\s*\w+\s*\)', 'texture(imageTex, texCoord)', body)
+        body = re.sub(r'\bIMG_PIXEL\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
+        body = re.sub(r'\btexture2D\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
+        body = re.sub(r'\btexture\s*\(\s*\w+\s*,', 'texture(imageTex,', body)
+
+    # --- ISF builtins ---
+    if re.search(r'\bPASSINDEX\b', body):
+        if re.search(r'\bbuffer[A-D]\b|\bBuffer[A-D]\b|\bfeedback\b', body):
+            raise ConversionError(
+                "multi-pass feedback (buffer/feedback refs): VS-2 is "
+                "single-pass; convert by hand via the vs2-shader-expert skill")
+        # project onto the FINAL pass (the composite that writes fragColor);
+        # count comes from the header PASSES array, default 2
+        passes = 1
+        passes = max(1, len(header_all.get('PASSES', [])) or 1)
+        final_pass = str(passes - 1)
+        body = re.sub(r'\bPASSINDEX\b', final_pass, body)
+        report['warnings'].append(
+            f"PASSINDEX -> {final_pass} (single-pass projection onto the "
+            f"final pass of {passes})")
+    if re.search(r'\bMOUSE\b', body):
+        mouse_is_vec4 = bool(re.search(
+            r'uniform\s+vec4\s+MOUSE\b', source))
+        mouse_expr = ('vec4(x, y, 0.0, 0.0)' if mouse_is_vec4
+                      else 'vec2(x, y)')
+        if len(manifest) + 2 <= MAX_PARAMS and 'x' not in used_names \
+                and 'y' not in used_names:
+            body = re.sub(r'\bMOUSE\b', mouse_expr, body)
+            manifest.append({'name': 'x', 'default': 0.5})
+            manifest.append({'name': 'y', 'default': 0.5})
+            used_names.update({'x', 'y'})
+            report['warnings'].append(
+                f"MOUSE -> {mouse_expr} pan parameters")
+        else:
+            body = re.sub(r'\bMOUSE\b',
+                          'vec4(0.5, 0.5, 0.0, 0.0)' if mouse_is_vec4
+                          else 'vec2(0.5)', body)
+            report['warnings'].append("MOUSE -> static centre")
+    # Shadertoy helper functions take the fragment coordinate as a vec2 uv
+    # parameter - `float raymarch(vec3 from, vec3 dir, vec2 fragCoord, ...)`.
+    # The mainImage in-param is renamed above; these are ordinary helpers and
+    # were missed, so they kept calling an identifier VS-2 no longer defines.
+    # Same reasoning: the parameter IS a 0..1 uv, so texCoord is the right
+    # name, and `fragCoord / resolution.xy` inside them becomes texCoord.
+    body = re.sub(
+        r'\bin\s+vec2\s+fragCoord\b', 'in vec2 texCoord', body)
+    body = re.sub(r'(?<![\w.])fragCoord(?![\w])', 'texCoord', body)
+
+    # Prose mentions, e.g. "// Replaced fragCoord and iResolution with
+    # gl_FragCoord and RENDERSIZE". Not code, but leaving it makes a
+    # completeness check for gl_FragCoord impossible to run over the corpus.
+    body = re.sub(r'(//[^\n]*?)\bgl_FragCoord\b',
+                  r'\1the fragment coordinate', body)
+
+    # RENDERSIZE is the render target size in pixels. The normal way an ISF
+    # source turns the fragment coordinate into a 0..1 uv is
+    # `gl_FragCoord.xy / RENDERSIZE.xy`. VS-2's `texCoord` IS that 0..1 uv
+    # already, so the whole expression becomes `texCoord`.
+    #
+    # Leaving it as gl_FragCoord/resolution is NOT equivalent: it depends on
+    # gl_FragCoord behaving as it does on the desktop GL the source assumed.
+    # A raymarched ISF converted this way rendered a BLACK SCREEN in VS-2 and
+    # appeared the instant the line used `texCoord` (author-verified,
+    # 2026-09-25). Do this substitution BEFORE RENDERSIZE -> resolution, so
+    # the composed pattern is still recognisable.
+    body = re.sub(
+        r'gl_FragCoord\s*\.\s*xy\s*/\s*RENDERSIZE\s*\.\s*xy', 'texCoord', body)
+    body = re.sub(
+        r'gl_FragCoord\s*\.\s*xy\s*/\s*RENDERSIZE\b', 'texCoord', body)
+    body = re.sub(
+        r'gl_FragCoord\s*/\s*RENDERSIZE\s*\.\s*xy', 'texCoord', body)
+    body = re.sub(
+        r'gl_FragCoord\s*/\s*RENDERSIZE\b', 'texCoord', body)
+    body = re.sub(r'\bRENDERSIZE\b', 'resolution', body)
+
+    # A source that normalised as `gl_FragCoord.xy / RENDERSIZE.xy` is fully
+    # reduced to texCoord above. But `fragCoord / resolution.xy` inside a
+    # helper, or a `texCoord / RENDERSIZE.xy` the source wrote directly, is
+    # still a divide by the size applied to an already-normalised uv. Cancel it.
+    for _ in range(3):
+        body = re.sub(
+            r'texCoord\s*/\s*resolution\.xy', 'texCoord', body)
+    # gl_FragCoord is not usable in VS-2. Author-verified 2026-09-25: three
+    # julia variants differing only in the uv derivation - the texCoord one
+    # rendered and animated, both gl_FragCoord ones failed.
+    #
+    # Identity FIRST: the fragment coordinate in pixels IS the normalised
+    # texCoord times the render size,
+    #     gl_FragCoord.xy  ==  texCoord * RENDERSIZE.xy
+    # so every algebraic shape reduces correctly:
+    #     (gl_FragCoord.xy*2 - RENDERSIZE.xy)/RENDERSIZE.y
+    #   -> (texCoord*RENDERSIZE.xy*2 - RENDERSIZE.xy)/RENDERSIZE.y
+    #   -> texCoord*2 - 1
+    # which is the form the author verified renders. Without the identity the
+    # four `*2 - RENDERSIZE.xy)/RENDERSIZE.y` shaders emit
+    # `texCoord*2 - resolution.xy`, a vec2 minus a differently-scaled vec2,
+    # and render flat.
+    #
+    # This MUST precede the scalar rules: a rule matching `gl_FragCoord\.x`
+    # matches the leading x of `.xy` and mangles the pair.
+    body = re.sub(r'gl_FragCoord\s*\.\s*xy',
+                  'texCoord * RENDERSIZE.xy', body)
+    body = re.sub(
+        r'texCoord\s*\*\s*RENDERSIZE\s*\.\s*xy\s*/\s*RENDERSIZE\s*\.\s*xy',
+        'texCoord', body)
+    body = re.sub(
+        r'texCoord\s*\*\s*RENDERSIZE\s*\.\s*xy\s*/\s*RENDERSIZE\b',
+        'texCoord', body)
+    # a scalar swizzle of the identity: (texCoord * RENDERSIZE.xy).x
+    body = re.sub(
+        r'\(\s*texCoord\s*\*\s*RENDERSIZE\s*\.\s*xy\s*\)\s*\.\s*xy',
+        'texCoord', body)
+    body = re.sub(r'\bRENDERSIZE\b', 'resolution', body)
+
+    # The identity leaves `(texCoord * resolution.xy * 2.0 - resolution.xy)`.
+    # Factor the shared resolution.xy out of the pair and cancel the divisor:
+    #     (T*S*2 - S) / S  ==  T*2 - 1
+    # Applied to the whole parenthesised group, not just a bare divide, so
+    # the emitted uv reads like the hand-written factory shaders.
+    for _ in range(3):
+        body = re.sub(
+            r'\(\s*texCoord\s*\*\s*resolution\s*\.\s*xy\s*\*\s*'
+            r'([\d.]+)\s*-\s*resolution\s*\.\s*xy\s*\)\s*'
+            r'/\s*resolution\s*\.\s*y',
+            r'(texCoord * \1 - 1.0)', body)
+        body = re.sub(
+            r'\(\s*texCoord\s*\*\s*resolution\s*\.\s*xy\s*\*\s*'
+            r'([\d.]+)\s*-\s*resolution\s*\.\s*xy\s*\)\s*'
+            r'/\s*resolution\s*\.\s*xy',
+            r'(texCoord * \1 - 1.0)', body)
+        body = re.sub(
+            r'\(\s*texCoord\s*\*\s*resolution\s*\.\s*xy\s*-\s*'
+            r'([\d.]+)\s*\*\s*resolution\s*\.\s*xy\s*\)\s*'
+            r'/\s*resolution\s*\.\s*y',
+            r'(texCoord - \1)', body)
+
+    # Scalar swizzles, applied AFTER the .xy normalisation above: a
+    # `gl_FragCoord.x` must not be eaten by an .xy rule, and the .xy
+    # form must be reduced before these run. These feed pixel-scale
+    # hashes (fract(sin(gl_FragCoord.x * 12.9898 + ...))), so they are
+    # the pixel coordinate per component, not a normalised uv.
+    # Load-bearing: no normalisation pattern covers a bare swizzle.
+    body = re.sub(r'gl_FragCoord\s*\.\s*x',
+                  '(texCoord * resolution.xy).x', body)
+    body = re.sub(r'gl_FragCoord\s*\.\s*y',
+                  '(texCoord * resolution.xy).y', body)
+    body = re.sub(r'gl_FragCoord\s*\.\s*z',
+                  '(texCoord * resolution.xy).z', body)
+
+
+
+    # (texCoord * resolution.xy / resolution.xy) is just texCoord. The
+    # identity substitution above introduces the cancel wherever a source
+    # already normalised by RENDERSIZE.xy; fold it so the emitted uv reads
+    # like the hand-written factory shaders rather than carrying a no-op.
+    for _ in range(3):
+        # Cancel the divide first: this only matches a genuine division, so
+        # it cannot damage a swizzle of the identity. Doing it in the other
+        # order rewrites `(texCoord * resolution.xy).xy / resolution.xy`
+        # into `texCoord / resolution.xy`, which is a different shader.
+        body = re.sub(
+            r'texCoord\s*\*\s*resolution\.xy\s*/\s*resolution\.xy',
+            'texCoord', body)
+        # Then the swizzle of the identity is just texCoord.
+        body = re.sub(
+            r'\(\s*texCoord\s*\*\s*resolution\.xy\s*\)\s*\.\s*xy',
+            'texCoord', body)
+
     body = re.sub(r'\bisf_FragNormCoord\b', 'texCoord', body)
     body = re.sub(r'\bgl_FragColor\b', 'fragColor', body)
 

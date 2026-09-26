@@ -739,6 +739,143 @@ class IsfImageInputTests(unittest.TestCase):
         self.assertNotIn('src0', names)
 
 
+
+_SKIP_DIRS = {'.git', '__pycache__', 'converted_shaders', 'factory-examples',
+              'factory-references', 'shader-pipeline', 'node_modules',
+              'tests', 'templates', 'core', 'validators', 'renderer'}
+
+
+def _collections():
+    """Every directory that directly holds .fs sources.
+
+    The other helpers in this suite use a ">=3 files" threshold to decide
+    what counts as a COLLECTION. That is right for test_isf_collections,
+    which asks "which directories are collections", but wrong here: it left
+    ISF-shaders-main out entirely, because that tree stores ONE .fs per
+    subdirectory (41 dirs, 1 file each). The corpus check was silently
+    running over 7 files instead of all of them.
+
+    So: any directory with at least one .fs, plus its ancestors up to the
+    repo root, so corpus_scan.sources() can walk each one.
+    """
+    found = set()
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        dirnames[:] = [d for d in dirnames
+                       if not d.startswith('.') and d not in _SKIP_DIRS]
+        if any(f.lower().endswith('.fs') for f in filenames):
+            d = dirpath
+            while d.startswith(REPO_ROOT):
+                found.add(d)
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+    return sorted(found)
+
+
+class ISFFragCoordTests(unittest.TestCase):
+    """gl_FragCoord is not usable in VS-2.
+
+    Author-verified 2026-09-25: three variants of one julia shader differing
+    ONLY in how uv was derived. The texCoord variant rendered and animated;
+    both gl_FragCoord variants failed. Variants B and C were arithmetically
+    identical, which is what established gl_FragCoord itself - not the
+    normalisation - as the variable.
+
+    These guard the ISF/RENDERSIZE path specifically. The Shadertoy
+    mainImage path has its own tests; that one passing says nothing about
+    this one, which is how a whole-shader black screen shipped.
+    """
+
+    ISF_HEAD = (
+        '/*{\n'
+        '    "INPUTS": [\n'
+        '        {"NAME": "Dummy", "TYPE": "float", "DEFAULT": 1.0,'
+        ' "MIN": 0.0, "MAX": 2.0}\n'
+        '    ]\n'
+        '}*/\n\n'
+    )
+
+    def _convert(self, body):
+        src = (self.ISF_HEAD + 'void main() {\n' + body + '\n'
+               '    gl_FragColor = vec4(color, 1.0);\n}\n')
+        return convert(src, 'ISF', 'p')['frag']
+
+    def test_isf_never_emits_gl_fragcoord(self):
+        # Several algebraic shapes, all of which occur in the corpus.
+        shapes = [
+            '    vec3 color = vec3(gl_FragCoord.xy / RENDERSIZE.xy, 0.0);',
+            '    vec3 color = vec3((gl_FragCoord.xy * 2.0 - RENDERSIZE.xy)'
+            ' / RENDERSIZE.y);',
+            '    vec3 color = vec3((gl_FragCoord.xy - 2.0 * RENDERSIZE)'
+            ' / RENDERSIZE.y);',
+            '    vec3 color = vec3(gl_FragCoord.xy / RENDERSIZE.xy * 2.0 - 1.0);',
+        ]
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                frag = self._convert(shape)
+                self.assertNotIn('gl_FragCoord', frag,
+                                 'gl_FragCoord survived: %r' % shape)
+
+    def test_scalar_fragcoord_swizzles_become_the_pixel_coordinate(self):
+        # A pixel-scale hash, as in phreax hexflower.
+        frag = self._convert(
+            '    vec3 color = vec3(fract(sin(gl_FragCoord.x * 12.9898'
+            ' + gl_FragCoord.y * 75.5914)));')
+        self.assertNotIn('gl_FragCoord', frag)
+        self.assertIn('texCoord', frag)
+
+    def test_uv_from_texcoord_does_not_carry_a_noop_divide(self):
+        frag = self._convert('    vec3 color = vec3(texCoord * 2.0 - 1.0, 0.0);')
+        self.assertNotIn('gl_FragCoord', frag)
+        self.assertNotIn('resolution.xy / resolution.xy', frag)
+
+    def test_shadertoy_path_never_emits_gl_fragcoord(self):
+        """The same guarantee for the Shadertoy converter.
+
+        A Julia-shape Shadertoy source is the case the author verified, and
+        the ISF corpus does not contain one, so without this the whole
+        Shadertoy half of the rule is unguarded.
+        """
+        body = ('void mainImage(out vec4 fragColor, in vec2 fragCoord) {\n'
+                '    vec2 uv = (fragCoord * 2.0 - iResolution.xy)\n'
+                '        / iResolution.y;\n'
+                '    fragColor = vec4(uv, 0.0, 1.0);\n}\n')
+        frag = convert(body, 'Shadertoy', 'p')['frag']
+        self.assertNotIn(
+            'gl_FragCoord', frag,
+            'the Shadertoy mainImage in-param must map to texCoord, which is '
+            'already 0..1 - mapping it to gl_FragCoord produced a black '
+            'screen in VS-2')
+
+    def test_whole_corpus_output_is_fragcoord_free(self):
+        """Structural check across every ISF source in the corpus.
+
+        The unit tests above pin individual shapes; this catches a shape
+        nobody thought to enumerate, which is how the phreax hexflower
+        scalar-swizzle case survived the first fix."""
+        import corpus_scan
+        checked = 0
+        for coll in _collections():
+            for path in corpus_scan.sources(coll):
+                if not path.lower().endswith('.fs'):
+                    continue
+                try:
+                    with open(path, encoding='utf-8-sig',
+                              errors='replace') as fh:
+                        src = fh.read()
+                except OSError:
+                    continue
+                try:
+                    frag = convert(src, 'ISF', 'p')['frag']
+                except Exception:
+                    continue  # declined, not converted
+                checked += 1
+                self.assertNotIn(
+                    'gl_FragCoord', frag,
+                    'corpus source %s emits gl_FragCoord' % path)
+        self.assertGreater(checked, 0, 'no ISF sources were checked')
+
 class HardGateTests(unittest.TestCase):
     def test_feedback_buffer_rejected(self):
         with self.assertRaises(ConversionError) as ctx:
