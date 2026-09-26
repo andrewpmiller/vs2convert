@@ -876,6 +876,67 @@ class ISFFragCoordTests(unittest.TestCase):
                     'corpus source %s emits gl_FragCoord' % path)
         self.assertGreater(checked, 0, 'no ISF sources were checked')
 
+
+class SingleDefinitionTests(unittest.TestCase):
+    """Each converter entry point must be defined exactly once.
+
+    Found by the mutation harness: seven mutations "survived" because
+    generator.py contained THREE copies of _convert_isf and three of
+    _convert_glslsandbox. In Python the last definition wins, so the earlier
+    copies were dead code - and apply_mutation replaces only the FIRST
+    occurrence, so every one of those mutations was patching a function that
+    never runs. The tests were not weak; they were pointed at live code while
+    the mutation edited a corpse.
+
+    The duplicates came from scripted edits that appended instead of
+    replacing, after a failed first attempt. This test is the check that would
+    have caught it.
+    """
+
+    ENTRY_POINTS = ('_convert_shadertoy', '_convert_glslsandbox',
+                    '_convert_isf', '_forced_fallback')
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(REPO_ROOT, 'vs2_convert', 'core',
+                               'generator.py')) as fh:
+            cls.src = fh.read()
+
+    def test_entry_points_are_defined_exactly_once(self):
+        import ast
+        tree = ast.parse(self.src)
+        counts = {}
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name in self.ENTRY_POINTS:
+                counts.setdefault(node.name, []).append(node.lineno)
+        for name in self.ENTRY_POINTS:
+            found = counts.get(name, [])
+            self.assertEqual(
+                1, len(found),
+                '%s is defined %d times at lines %s. Only the last is live; '
+                'the rest is dead code that mutations will patch instead of '
+                'the real function.' % (name, len(found), found))
+
+    def test_fmt_map_binds_the_live_definitions(self):
+        """fmt_map must reference names, not re-wrap them.
+
+        A cheap second check: convert() dispatches through fmt_map, so if a
+        wrapper ever shadowed a name the duplication above would be hard to
+        see from the call site alone."""
+        import ast
+        tree = ast.parse(self.src)
+        convert_fn = None
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == 'convert':
+                convert_fn = node
+        self.assertIsNotNone(convert_fn, 'convert() not found')
+        src = ast.get_source_segment(self.src, convert_fn)
+        for name in ('_convert_isf', '_convert_glslsandbox'):
+            self.assertIn(name, src,
+                          'convert() no longer dispatches through %s' % name)
+
+
+
 class HardGateTests(unittest.TestCase):
     def test_feedback_buffer_rejected(self):
         with self.assertRaises(ConversionError) as ctx:

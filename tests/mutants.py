@@ -364,4 +364,28 @@ MUTATIONS = [
         why=('Same defect by the other route: an ISF source that normalises '
              'with RENDERSIZE must emit texCoord, not a pixel-space divide.'),
     ),
+    # ---- the mutation harness's blind spot: dead code ----
+    # Seven mutations below used to "survive" because generator.py held three
+    # copies of _convert_isf and three of _convert_glslsandbox. Last def wins,
+    # so the first copies were dead, and apply_mutation replaces only the
+    # FIRST occurrence - it patched a function that never ran, while the
+    # tests exercised the live one. Duplicates arrived from scripted edits
+    # that appended instead of replacing after a failed first attempt.
+    Mutation(
+        name='generator: duplicate the ISF entry point (shadowed definition)',
+        path='core/generator.py',
+        find="def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:",
+        replace=("def _convert_isf(source: str, report: dict,"
+                 " meta: dict = None) -> tuple:\n    return _convert_isf("
+                 "source, report, meta)\n\n\n"
+                 "def _convert_isf(source: str, report: dict,"
+                 " meta: dict = None) -> tuple:"),
+        selector='test_engine.SingleDefinitionTests',
+        why=('A second top-level def shadows the first, so the module binds '
+             'the later one and the earlier becomes dead. This is what made '
+             '7 mutations report as survivors while the real code was fine: '
+             'apply_mutation replaces the first occurrence, which was always '
+             'in the dead copy. No behaviour test can catch this, because the '
+             'live function genuinely still behaves correctly.'),
+    ),
 ]
