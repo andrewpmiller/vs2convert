@@ -632,15 +632,30 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
         if msig:
             out_name, in_name, brace = msig.group(1), msig.group(2), msig.group(3)
             body = sig.sub('void main(void)' + brace, body, count=1)
+            # The in-parameter is a vec2. Shadertoy passes fragCoord in PIXELS,
+            # so `fragCoord / iResolution.xy` normalises it. VS-2's texCoord is
+            # ALREADY a normalised 0..1 uv, so the two are not interchangeable:
+            # mapping the param to `gl_FragCoord` is wrong, and a shader that
+            # divides by resolution afterwards ends up with pixel coordinates
+            # again. Confirmed by the author: a raymarched ISF converted this way
+            # rendered a BLACK SCREEN in VS-2 and appeared the moment the line
+            # was changed to `texCoord` (PR feedback 2026-09-25).
             for old_name, new_name in ((out_name, 'fragColor'),
-                                       (in_name, 'gl_FragCoord')):
+                                       (in_name, 'texCoord')):
                 if old_name == new_name:
                     continue
                 # Don't touch struct field access (`.name`) or declarations.
                 body = re.sub(r'(?<![\w.])' + re.escape(old_name)
                               + r'\b', new_name, body)
+            # A Shadertoy body that divided by resolution to normalise now
+            # divides an already-normalised uv again. Cancel the division so the
+            # value matches what the source computed.
+            body = re.sub(
+                r'texCoord\s*/\s*resolution\.xy', 'texCoord', body)
+            body = re.sub(
+                r'texCoord\.xy\s*/\s*resolution\.xy', 'texCoord', body)
         else:
-            body = body.replace('fragCoord', 'gl_FragCoord')
+            body = body.replace('fragCoord', 'texCoord')
     elif not re.search(r'\bvoid\s+main\s*\(', body):
         raise ConversionError("no mainImage() or main() entry point found")
 
@@ -912,6 +927,25 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
                           'vec4(0.5, 0.5, 0.0, 0.0)' if mouse_is_vec4
                           else 'vec2(0.5)', body)
             report['warnings'].append("MOUSE -> static centre")
+    # RENDERSIZE is the render target size in pixels. The normal way an ISF
+    # source turns the fragment coordinate into a 0..1 uv is
+    # `gl_FragCoord.xy / RENDERSIZE.xy`. VS-2's `texCoord` IS that 0..1 uv
+    # already, so the whole expression becomes `texCoord`.
+    #
+    # Leaving it as gl_FragCoord/resolution is NOT equivalent: it depends on
+    # gl_FragCoord behaving as it does on the desktop GL the source assumed.
+    # A raymarched ISF converted this way rendered a BLACK SCREEN in VS-2 and
+    # appeared the instant the line used `texCoord` (author-verified,
+    # 2026-09-25). Do this substitution BEFORE RENDERSIZE -> resolution, so
+    # the composed pattern is still recognisable.
+    body = re.sub(
+        r'gl_FragCoord\s*\.\s*xy\s*/\s*RENDERSIZE\s*\.\s*xy', 'texCoord', body)
+    body = re.sub(
+        r'gl_FragCoord\s*\.\s*xy\s*/\s*RENDERSIZE\b', 'texCoord', body)
+    body = re.sub(
+        r'gl_FragCoord\s*/\s*RENDERSIZE\s*\.\s*xy', 'texCoord', body)
+    body = re.sub(
+        r'gl_FragCoord\s*/\s*RENDERSIZE\b', 'texCoord', body)
     body = re.sub(r'\bRENDERSIZE\b', 'resolution', body)
     body = re.sub(r'\bisf_FragNormCoord\b', 'texCoord', body)
     body = re.sub(r'\bgl_FragColor\b', 'fragColor', body)

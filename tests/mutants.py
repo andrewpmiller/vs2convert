@@ -335,11 +335,33 @@ MUTATIONS = [
     Mutation(
         name='corpus_scan: count readme.txt as a shader',
         path='tests/corpus_scan.py',
-        find="            if any(h in stem for h in _PROSE_HINTS):\n                continue",
-        replace='            pass',
-        selector='test_isf_collections',
+        find="            if any(h in stem for h in _PROSE_HINTS):",
+        replace="            if False:",
+        selector='test_isf_collections.ProseExclusionTests',
         why=('Collections ship readme.txt and similar; counting them as '
              'sources reported a documentation file as an unconvertible '
              'shader.'),
+    ),
+
+    # ---- fragCoord / RENDERSIZE -> texCoord (author-verified fix) ------
+    Mutation(
+        name='generator: map mainImage in-param to gl_FragCoord again',
+        path='core/generator.py',
+        find="                                       (in_name, 'texCoord')):",
+        replace="                                       (in_name, 'gl_FragCoord')):",
+        selector='test_engine',
+        why=('The in-param is a vec2 UV. Shadertoy builds it as '
+             '`fragCoord / iResolution.xy`; VS-2 texCoord is already that '
+             '0..1 uv. Mapping to gl_FragCoord made a raymarched ISF render a '
+             'BLACK SCREEN in VS-2 - author-verified fix, 2026-09-25.'),
+    ),
+    Mutation(
+        name='generator: keep gl_FragCoord/RENDERSIZE instead of texCoord',
+        path='core/generator.py',
+        find="        r'gl_FragCoord\\s*\\.\\s*xy\\s*/\\s*RENDERSIZE\\s*\\.\\s*xy', 'texCoord', body)",
+        replace="        r'gl_FragCoord\\s*\\.\\s*xy\\s*/\\s*RENDERSIZE\\s*\\.\\s*xy', 'gl_FragCoord', body)",
+        selector='test_engine',
+        why=('Same defect by the other route: an ISF source that normalises '
+             'with RENDERSIZE must emit texCoord, not a pixel-space divide.'),
     ),
 ]

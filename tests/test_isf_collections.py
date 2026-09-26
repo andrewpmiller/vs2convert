@@ -46,6 +46,50 @@ def _collections():
     return sorted(set(found))
 
 
+class ProseExclusionTests(unittest.TestCase):
+    """`sources()` walks the collections and must not hand back documentation
+    as if it were a shader. Without a test here the exclusion can be deleted
+    and the corpus still reports clean, because nothing asserts it.
+
+    These call sources() and check its OUTPUT. An earlier version of this
+    class only inspected the _PROSE_HINTS list, which stayed green with the
+    guard in sources() deleted - the mutation harness caught that."""
+
+    def test_sources_excludes_prose_in_a_real_collection(self):
+        import corpus_scan
+        # A temp tree is the only reliable probe: it isolates the question
+        # "does sources() drop a file named readme.txt" from whatever the
+        # collections happen to ship today.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for name in ('readme.txt', 'Readme.txt', 'CREDITS.txt',
+                         'notes.md', 'real shader.fs'):
+                open(os.path.join(d, name), 'w').close()
+            found = [os.path.basename(p) for p in corpus_scan.sources(d)]
+        self.assertIn('real shader.fs', found,
+                      'probe is broken: sources() dropped a real .fs file')
+        for prose in ('readme.txt', 'Readme.txt', 'CREDITS.txt', 'notes.md'):
+            self.assertNotIn(prose, found,
+                             'sources() returned %r as a shader source' % prose)
+
+    def test_prose_hints_cover_what_the_collections_actually_contain(self):
+        import corpus_scan
+        prose = ('.txt', '.md')
+        undocumented = set()
+        for coll in _collections():
+            for dirpath, _, filenames in os.walk(coll):
+                for f in filenames:
+                    if not f.lower().endswith(prose):
+                        continue
+                    stem = os.path.splitext(f)[0].lower()
+                    if not any(h in stem for h in corpus_scan._PROSE_HINTS):
+                        undocumented.add(f)
+        self.assertEqual(
+            set(), undocumented,
+            'prose names not covered by _PROSE_HINTS: %s'
+            % sorted(undocumented)[:5])
+
+
 class CollectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

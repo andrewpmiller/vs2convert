@@ -538,10 +538,17 @@ class RealShadertoyGlitchTests(unittest.TestCase):
                ' vec4 s = texture(iChannel0, uv);'
                ' f = vec4(s.rgb, s.a); }')
         frag = convert(src, 'Shadertoy', 'p')['frag']
-        self.assertIn('gl_FragCoord', frag)
+        # The in-parameter is a vec2 UV, so it becomes texCoord - which is
+        # already 0..1, the same value Shadertoy builds with
+        # `fragCoord / iResolution.xy`. Mapping it to gl_FragCoord instead is
+        # what made a raymarched shader render black in VS-2
+        # (author-verified 2026-09-25).
+        self.assertIn('texCoord', frag)
+        self.assertNotIn('gl_FragCoord', frag)
         self.assertIn('fragColor', frag)
         self.assertNotRegex(frag, r'\b[fc]\s*/')
-        self.assertNotIn('(c /', frag)
+        # the redundant divide is cancelled, not doubled
+        self.assertNotIn('texCoord / resolution.xy', frag)
 
     def test_mainimage_is_inlined_into_main(self):
         """The wrapper form `mainImage(fragColor, gl_FragCoord.xy)` assigns
