@@ -973,8 +973,17 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
     # the composed pattern is still recognisable.
     body = re.sub(
         r'gl_FragCoord\s*\.\s*xy\s*/\s*RENDERSIZE\s*\.\s*xy', 'texCoord', body)
+    # Dividing by RENDERSIZE.y (not RENDERSIZE.xy) is a per-axis squash the
+    # source wrote deliberately, e.g.
+    #     (gl_FragCoord.xy / RENDERSIZE.y - RENDERSIZE.xy / RENDERSIZE.y)
+    # The `.xy` MUST be preserved: collapsing it to a bare `texCoord` yields
+    # `texCoord.y - RENDERSIZE.xy / RENDERSIZE.y`, a FLOAT minus a vec2 -
+    # ill-typed GLSL. On the author's VS-2 that rendered as horizontal lines
+    # with no circular shapes at all. Keep the pair so the identity above can
+    # reduce it to a well-typed vec2.
     body = re.sub(
-        r'gl_FragCoord\s*\.\s*xy\s*/\s*RENDERSIZE\b', 'texCoord', body)
+        r'gl_FragCoord\s*\.\s*xy\s*/\s*RENDERSIZE\b',
+        'texCoord * RENDERSIZE.xy / RENDERSIZE', body)
     body = re.sub(
         r'gl_FragCoord\s*/\s*RENDERSIZE\s*\.\s*xy', 'texCoord', body)
     body = re.sub(
