@@ -10,7 +10,9 @@ Run: python3 vs2_convert/tests/test_validator.py
 """
 import glob
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -297,6 +299,59 @@ class SuitabilityGateTests(unittest.TestCase):
             r = check_suitability(src)
             self.assertEqual(r['suitable'], len(r['errors']) == 0,
                              'suitable/errors disagree for: %r' % src[:40])
+
+
+class PerfBudgetTests(unittest.TestCase):
+    """ADJUDICATION: the loop-budget warning is a gate, so it needs a control.
+
+    Found by the gate audit (tests/test_gate_audit.py). WARN never fails the
+    validator's exit code and NOTHING asserted this warning, so raising the
+    threshold from 100 to 300 changed no observable behaviour anywhere in the
+    suite. A warning no test can see is not a gate.
+
+    The two real instances it guards today are converted_shaders/
+    pathogen_path.frag (130) and spiral_riders_kali.frag (150), the only two
+    shipped files the validator warns about.
+    """
+
+    OVER_BUDGET = '\n'.join([
+        '/*{"parameters": [{"name": "level", "default": 0.5}]}*/',
+        'void main() {',
+        '    vec3 acc = vec3(0.0);',
+        '    for (int i = 0; i < 200; i++) {',
+        '        acc += vec3(float(i) * 0.001);',
+        '    }',
+        '    vec3 c = acc * color.rgb * level;',
+        '    float coloredPixels = dot(clamp(c, 0.0, 1.0), vec3(1.0));',
+        '    fragColor = vec4(c, alpha * coloredPixels);',
+        '}',
+    ])
+
+    def _validator_output(self, body):
+        validator = os.path.join(REPO_ROOT, '.cline', 'skills',
+                                 'vs2-shader-expert', 'scripts',
+                                 'validate_shader.py')
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'over-budget.frag')
+            with open(path, 'w') as fh:
+                fh.write(body)
+            proc = subprocess.run([sys.executable, validator, path],
+                                  capture_output=True, text=True)
+        return proc.stdout + proc.stderr
+
+    def test_loop_over_the_budget_warns(self):
+        out = self._validator_output(self.OVER_BUDGET)
+        self.assertIn(
+            'loop bound 200 > 100', out,
+            'the perf-budget warning did not fire for a 200-iteration loop: %s'
+            % out[-300:])
+
+    def test_loop_under_the_budget_does_not_warn(self):
+        """Counterpart, so a check that warns on every loop cannot pass."""
+        out = self._validator_output(self.OVER_BUDGET.replace('< 200', '< 50'))
+        self.assertNotIn('loop bound', out,
+                         'a 50-iteration loop was reported over budget: %s'
+                         % out[-300:])
 
 
 if __name__ == '__main__':
