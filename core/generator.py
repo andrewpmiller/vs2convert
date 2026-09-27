@@ -1050,6 +1050,41 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
             r'([\d.]+)\s*\*\s*resolution\s*\.\s*xy\s*\)\s*'
             r'/\s*resolution\s*\.\s*y',
             r'(texCoord - \1)', body)
+        # Same fold, operands in the other order: the source may write
+        # `RENDERSIZE.xy * 0.5` rather than `0.5 * RENDERSIZE.xy`, which
+        # leaves (texCoord * resolution.xy - resolution.xy * K) after the
+        # identity - a different string from the case above.
+        body = re.sub(
+            r'\(\s*texCoord\s*\*\s*resolution\s*\.\s*xy\s*-\s*'
+            r'resolution\s*\.\s*xy\s*\*\s*([\d.]+)\s*\)\s*'
+            r'/\s*resolution\s*\.\s*y',
+            r'(texCoord - \1)', body)
+
+    # Engine aspect factor, matching the expert reference set in
+    # converted_shaders/. texCoord is NOT pre-corrected by VS-2 (author
+    # verified 2026-09-26: an uncorrected circle renders wider than tall) and
+    # the golden form scales Y: `* vec2(1.0, div)` with
+    # div = resolution.y / resolution.x (author verified: renders round).
+    #
+    # A deliberate DEPARTURE from source fidelity. 17 of the 18 expert
+    # conversions carry the factor even where the ISF source has no aspect
+    # correction at all; the expert comment reads "engine convention
+    # (div = y/x); matches source framing on square canvases". The ISF
+    # sources divide by RENDERSIZE.y, which is square-canvas framing, so on a
+    # landscape canvas the source IS stretched and the engine form is right.
+    # Staying faithful to the source contradicted the reference set 17/18.
+    _DIV = '    float div = resolution.y / resolution.x;\n'
+    for _pat, _rep in (
+            (r'\(\s*texCoord\s*\*\s*([\d.]+)\s*-\s*1\.0\s*\)',
+             r'(texCoord * \1 - 1.0) * vec2(1.0, div)'),
+            (r'\(\s*texCoord\s*-\s*([\d.]+)\s*\)',
+             r'(texCoord - \1) * vec2(1.0, div)')):
+        _new, _n = re.subn(_pat, _rep, body)
+        if _n:
+            body = _new
+            break
+    if 'vec2(1.0, div)' in body and _DIV not in body:
+        body = body.replace('void main() {\n', 'void main() {\n' + _DIV, 1)
 
     # Scalar swizzles, applied AFTER the .xy normalisation above: a
     # `gl_FragCoord.x` must not be eaten by an .xy rule, and the .xy
