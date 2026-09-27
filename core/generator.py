@@ -183,6 +183,7 @@ def _replace_scoped(src: str, name: str, plain: str, wrapped: str) -> str:
         out.append(plain if in_plain else wrapped)
         idx = m.end()
     out.append(src[idx:])
+    return ''.join(out)
 
 
 def _rewrite_output(source: str) -> str:
