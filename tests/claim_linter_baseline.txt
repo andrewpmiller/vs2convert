@@ -12,3 +12,7 @@ commit 34a9372d:11        # the false "Latent, not live" claim. Verified
 commit ddb730e8:6         # the rule commit quoting the words it forbids
 commit ddb730e8:9         #   "
 commit ddb730e8:30        #   "
+commit f2c158cd:39        # the claim-linter commit itself, documenting the
+                          # words it forbids. Baselined, NOT amended: editing
+                          # a commit message to make the gate pass is the
+                          # move this whole mechanism exists to prevent.
