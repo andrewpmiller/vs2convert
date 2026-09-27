@@ -13,13 +13,19 @@ from coverage.parser import PythonParser
 
 TARGET = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), 'core', 'generator.py')
+# <repo>/.coverage-data/.coverage, written by run_coverage.sh.
+# One '..' from vs2_convert/, not two: the two-'..' form resolved to the
+# PARENT of the repo, so this reported 'no .coverage data' on a run that
+# had just succeeded.
 DATA = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), '.coverage')
+    os.path.abspath(__file__))), '..', '.coverage-data',
+    '.coverage')
 
 
 def main():
     if not os.path.exists(DATA):
-        print('  no .coverage data - run run_coverage.sh first')
+        print('  no .coverage data at %s' % os.path.normpath(DATA))
+        print('  run vs2_convert/tests/run_coverage.sh first')
         return 1
     src = open(TARGET).read()
     tree = ast.parse(src)
