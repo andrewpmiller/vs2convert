@@ -1,0 +1,14 @@
+# Known unchecked claims. Lines are "label:line" and are matched exactly.
+#
+# These are NOT fixed. Rewriting committed history to make a linter green is
+# the same move as baselining a render-failure count - it hides the signal
+# instead of addressing it. They are recorded so the gate can pass on
+# anything NEW while the old ones stay visible forever.
+#
+# Format: <label>:<line>   # why it is accepted
+commit 34a9372d:11        # the false "Latent, not live" claim. Verified
+                          # FALSE after the fact: the path IS reachable and
+                          # raised TypeError. Commit message, not code.
+commit ddb730e8:6         # the rule commit quoting the words it forbids
+commit ddb730e8:9         #   "
+commit ddb730e8:30        #   "
