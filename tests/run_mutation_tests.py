@@ -48,6 +48,7 @@ REPO_ROOT = os.path.dirname(VS2_DIR)
 sys.path.insert(0, TESTS_DIR)
 
 from mutants import MUTATIONS, Mutation  # noqa: E402
+from safe_edit import EditError, edit  # noqa: E402
 
 GREEN, RED, YELLOW, DIM, BOLD, RESET = (
     '\033[32m', '\033[31m', '\033[33m', '\033[2m', '\033[1m', '\033[0m')
@@ -83,20 +84,26 @@ def run_tests(selector, verbose=False):
 
 
 def apply_mutation(mutation):
-    """Patch the target file. Returns (ok, detail)."""
+    """Patch the target file. Returns (ok, detail).
+
+    Uses safe_edit so a stale or ambiguous catalogue entry fails with the
+    reason instead of silently patching the wrong occurrence.
+
+    That exact silence is what hid 638 lines of dead code: generator.py held
+    three copies of _convert_isf, the hand-rolled code below replaced the
+    FIRST occurrence, and seven mutations therefore edited a function that
+    could not run - so they all reported as survivors while the real code was
+    fine. safe_edit refuses a needle that occurs more than once unless the
+    caller opts in, which turns that class of mistake into a BROKEN entry
+    the harness reports by name.
+    """
     target = os.path.join(VS2_DIR, mutation.path)
     if not os.path.exists(target):
         return False, 'target not found: %s' % mutation.path
-    with open(target) as f:
-        original = f.read()
-    if mutation.find not in original:
-        return False, ('search string not found in %s - the catalogue is '
-                       'stale, update it' % mutation.path)
-    mutated = original.replace(mutation.find, mutation.replace, 1)
-    if mutated == original:
-        return False, 'mutation produced no change'
-    with open(target, 'w') as f:
-        f.write(mutated)
+    try:
+        edit(target, mutation.find, mutation.replace, allow_dupes=True)
+    except EditError as exc:
+        return False, str(exc)
     return True, None
 
 
