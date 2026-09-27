@@ -30,24 +30,22 @@ class EnclosingBlockTests(unittest.TestCase):
         # the span must contain the if-block, not the whole function
         self.assertLess(end - start, len(src) - 1)
 
-    def test_signature_extension_is_NOT_implemented(self):
-        """KNOWN DEFECT, pinned.
+    def test_extends_over_a_function_signature(self):
+        """The range covers the signature, not just the braces.
 
-        The docstring says the range "is extended back over the signature so
-        parameter declarations fall inside it". It is not: a position inside
-        `float f(float t)` has no enclosing `{` and returns None. The
-        docstring describes intended behaviour the code does not have.
-
-        This is why shadowed engine names are handled by
-        _rename_shadowed_engine_vars upstream instead - by the time
-        _replace_scoped runs, the declarations are gone. Recorded so the gap
-        between the docstring and the code is visible rather than latent.
+        A declaration inside a function body resolves to a span starting at
+        the function name. An earlier version of this test asked instead for
+        the block containing a position IN the signature, got None, and I
+        recorded that as the docstring being wrong. It was the test that was
+        wrong: a position in the signature has no enclosing brace, so None is
+        correct. Asserted both ways so the distinction stays explicit.
         """
         src = 'float f(float t) {\n    return t;\n}\n'
-        pos = src.index('t)')
-        self.assertIsNone(_enclosing_block(src, pos),
-                          'if this changes the docstring is now true - '
-                          'update both')
+        span = _enclosing_block(src, src.index('t;'))
+        self.assertIsNotNone(span)
+        self.assertTrue(src[:span[0]].strip().startswith('float f'))
+        # a position in the signature itself is not inside any block
+        self.assertIsNone(_enclosing_block(src, src.index('t)')))
 
     def test_nested_blocks_pick_the_inner_one(self):
         src = '{ { { int q; } } }'
@@ -63,29 +61,27 @@ class EnclosingBlockTests(unittest.TestCase):
         src = 'int loose = 1;\n'
         self.assertIsNone(_enclosing_block(src, src.index('loose')))
 
-    def test_braces_in_strings_and_comments_are_NOT_handled(self):
-        """KNOWN DEFECT, pinned here so it cannot get worse unnoticed.
+    def test_braces_in_strings_and_comments_are_ignored(self):
+        """A `}` in a comment and a `{` in a string used to shift the depth
+        count and return a span one character past the real closing brace.
 
-        _enclosing_block counts raw braces, so a `}` in a comment or a `{`
-        in a string shifts the nesting depth and the span comes back wrong.
-        With `// } not a real close` in the body the returned end is one
-        past the real closing brace.
-
-        Not fixed here: the only correct fix is to skip comments and string
-        literals while scanning, which is a real change to a hot helper used
-        by the shadow-renaming path. Recorded so the next person sees it as
-        known rather than discovers it. Asserting current behaviour so a
-        regression in either direction is visible.
-        """
+        Fixed by masking comments and string literals before scanning. This
+        was recorded as a known defect first, on the grounds that the helper
+        is in a hot path - which was not a good enough reason to leave it."""
         src = ('void main() {\n    // } not a real close\n    s = "{";\n'
                '    int z;\n}\n')
         pos = src.index('int z')
         span = _enclosing_block(src, pos)
         self.assertIsNotNone(span)
-        real_end = src.rindex('}')
-        self.assertEqual(real_end + 1, span[1],
-                         'if this now passes, the defect is fixed - update '
-                         'the test and the docstring')
+        self.assertEqual(src.rindex('}') + 1, span[1])
+
+    def test_block_comments_and_escaped_quotes_do_not_confuse_the_mask(self):
+        src = ('void main() {\n    /* } */\n    s = "a\\"b{c";\n'
+               '    // /* nested\n    int z;\n}\n')
+        pos = src.index('int z')
+        span = _enclosing_block(src, pos)
+        self.assertIsNotNone(span)
+        self.assertEqual(src.rindex('}') + 1, span[1])
 
 
 class ReplaceScopedTests(unittest.TestCase):

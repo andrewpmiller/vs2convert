@@ -107,10 +107,57 @@ def _ensure_precision(source: str) -> str:
 
 
 
+def _mask_comments_and_strings(src: str) -> str:
+    """Return `src` with comment and string-literal contents blanked out.
+
+    Same length as the input, so every index still refers to the same
+    character position. Braces inside a comment or a string are replaced by
+    spaces, which stops them being counted as block delimiters.
+    """
+    out = list(src)
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == '/' and i + 1 < n and src[i + 1] == '/':
+            j = src.find('\n', i)
+            j = n if j == -1 else j
+            for k in range(i, j):
+                out[k] = ' '
+            i = j
+        elif c == '/' and i + 1 < n and src[i + 1] == '*':
+            j = src.find('*/', i + 2)
+            j = n if j == -1 else j + 2
+            for k in range(i, j):
+                out[k] = ' '
+            i = j
+        elif c in '"\'':
+            quote = c
+            j = i + 1
+            while j < n:
+                if src[j] == '\\' and j + 1 < n:
+                    j += 2
+                    continue
+                if src[j] == quote:
+                    break
+                j += 1
+            for k in range(i + 1, min(j, n - 1)):
+                out[k] = ' '
+            i = j + 1
+        else:
+            i += 1
+    return ''.join(out)
+
+
 def _enclosing_block(src: str, pos: int):
     """Innermost {...} block containing pos. Returns (start, end) or None.
     When the block is a function body, the range is extended back over the
-    signature so parameter declarations fall inside it."""
+    signature so parameter declarations fall inside it.
+
+    Braces inside comments and string literals are ignored: a `}` in a
+    comment used to inflate the backward depth count and return a span one
+    character past the real closing brace.
+    """
+    src = _mask_comments_and_strings(src)
     depth = 0
     open_pos = None
     for i in range(pos, -1, -1):
