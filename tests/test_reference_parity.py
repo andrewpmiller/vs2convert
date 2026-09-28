@@ -24,6 +24,7 @@ Reference: the author verified in VS-2 on 2026-09-25/26 that texCoord is not
 pre-corrected by the engine (an uncorrected circle renders wider than tall)
 and that the golden pattern scales Y (vec2(1.0, div), which renders round).
 """
+import json
 import os
 import re
 import sys
@@ -183,6 +184,84 @@ class ExpertReferenceParityTests(unittest.TestCase):
                               'expected the %r core in the output' % expect_core)
                 self.assertIn('vec2(1.0, div)', frag,
                               'the expert form scales Y: vec2(1.0, div)')
+
+
+    def test_expert_reference_parameters_are_valid_knob_ranges(self):
+        """Hard rule 1 & formal spec: All parameters in converted_shaders/*.frag
+        must have valid in-range knob defaults (0.0 <= default <= 1.0).
+        """
+        out_of_range = []
+        for stem, _ in REFERENCE_PAIRS:
+            expert = _load('converted_shaders/%s.frag' % stem)
+            m = re.search(r'/\*(.*?)\*/', expert, re.DOTALL)
+            if not m:
+                continue
+            manifest = json.loads(m.group(1))
+            for p in manifest.get('parameters', []):
+                d = p.get('default')
+                if d is None or not (0.0 <= float(d) <= 1.0):
+                    out_of_range.append((stem, p.get('name'), d))
+        self.assertEqual(
+            [], out_of_range,
+            'expert reference manifests with out-of-range knob defaults: %s'
+            % out_of_range)
+
+    def test_our_converted_knobs_round_trip_source_defaults(self):
+        """Magnitude-fidelity across the reference corpus.
+
+        When a source ISF float input declares DEFAULT over [MIN, MAX],
+        evaluating the converted shader formula:
+            restored = lo + knob * (hi - lo)
+        with the manifest knob default MUST round-trip to the source DEFAULT.
+        """
+        roundtrip_pat = re.compile(
+            r'\(\s*([-\d.eE+]+)\s*\+\s*(\w+)\s*\*\s*\(([-\d.eE+]+)\s*-\s*([-\d.eE+]+)\)\s*\)')
+        checked = 0
+        drifts = []
+        for stem, rel in REFERENCE_PAIRS:
+            isf_src = _load(os.path.join('ISF-shaders-main', rel))
+            header = ''
+            if '/*{' in isf_src:
+                header = isf_src[isf_src.find('/*{')+2 : isf_src.find('}*/')+1]
+            elif '/*' in isf_src:
+                header = isf_src[isf_src.find('/*')+2 : isf_src.find('*/')]
+            try:
+                inputs = json.loads(header).get('INPUTS', [])
+            except Exception:
+                inputs = []
+
+            src_inputs = {inp['NAME']: inp for inp in inputs
+                          if 'NAME' in inp and inp.get('TYPE') == 'float'}
+            try:
+                ours = _convert(rel)
+            except Exception:
+                continue
+
+            m = re.search(r'/\*(.*?)\*/', ours, re.DOTALL)
+            if not m:
+                continue
+            manifest = json.loads(m.group(1))
+            knobs = {p['name']: p['default'] for p in manifest.get('parameters', [])}
+
+            for lo_s, name, hi_s, lo2_s in roundtrip_pat.findall(ours):
+                if name in knobs:
+                    lo, hi = float(lo_s), float(hi_s)
+                    knob = knobs[name]
+                    restored = lo + knob * (hi - lo)
+                    for in_name, inp in src_inputs.items():
+                        if inp.get('DEFAULT') is not None and (
+                                name == in_name.lower()
+                                or name.startswith(in_name.lower())
+                                or in_name.lower().startswith(name)):
+                            src_def = float(inp['DEFAULT'])
+                            diff = abs(restored - src_def)
+                            if diff > 0.001:
+                                drifts.append((stem, name, restored, src_def, diff))
+                            checked += 1
+                            break
+
+        self.assertGreater(checked, 20, 'no roundtrips checked across reference corpus')
+        self.assertEqual([], drifts, 'source default magnitude drifts: %s' % drifts)
 
 
 if __name__ == '__main__':

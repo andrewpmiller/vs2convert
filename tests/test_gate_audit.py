@@ -229,6 +229,49 @@ AUDITS = [
              'proof. The linter must flag a bare one; the acid version that '
              'bypasses the baseline lives in test_claim_linter.AcidTest.'),
     ),
+    # --- a contract whose only guards skipped in the interpreter that can
+    #     actually exercise it ---
+    GateBreak(
+        id='verify-exit-contract',
+        guards='--verify exits 2, never 0, when the render check could not run',
+        path='vs2_convert/vs2_convert.py',
+        find='''        except ImportError:
+            r.skipped(name, 'converted, but not verified',
+                      body=['the render check could not run'],
+                      action="pip install 'vs2-convert[render]'", exit_code=2)
+            sys.exit(2)
+''',
+        replace='''        except ImportError:
+            r.skipped(name, 'converted, but not verified',
+                      body=['the render check could not run'],
+                      action="pip install 'vs2-convert[render]'", exit_code=2)
+            return 0
+''',
+        selector='test_cli.VerifyContractTests',
+        python='venv',
+        expect_failing=('test_render_import_failure_exits_2',),
+        why=('The two tests that guarded this skipped whenever moderngl was '
+             'present, so in the venv - the interpreter where --verify can '
+             'actually run - the contract was unguarded, and in plain python3 '
+             'the corpus render gate skipped instead. Returning 0 there '
+             'prints "exit 2" in its own message while reporting success: an '
+             'unverified shader read as verified. test_cli.VerifyContractTests '
+             'forces the ImportError instead of waiting for an interpreter '
+             'that lacks the dependency.'),
+    ),
+    # --- magnitude fidelity across reference corpus ---
+    GateBreak(
+        id='reference-magnitude-fidelity',
+        guards='test_reference_parity: converted knobs round-trip source defaults',
+        path='vs2_convert/core/generator.py',
+        find='knob = min(1.0, max(0.0, (dflt - lo) / (hi - lo)))',
+        replace='knob = min(1.0, max(0.0, (dflt - lo) / (hi - lo))) + 0.1',
+        selector='test_reference_parity.ExpertReferenceParityTests.test_our_converted_knobs_round_trip_source_defaults',
+        expect_failing=('test_our_converted_knobs_round_trip_source_defaults',),
+        why=('Drifting the converted knob calculation distorts default renders '
+             'across every shader in the reference set; test_reference_parity '
+             'must fail when restored magnitudes diverge from source defaults.'),
+    ),
 ]
 
 

@@ -178,5 +178,61 @@ class VerdictShapeTests(unittest.TestCase):
         self.assertNotIn('failed', r.stdout.lower())
 
 
+class VerifyContractTests(unittest.TestCase):
+    """--verify must never exit 0 when the render check did not run.
+
+    This FORCES the failure instead of waiting for an interpreter without
+    moderngl. The two tests above skip whenever moderngl is present, so between
+    them the contract was guarded only in the interpreter where --verify cannot
+    run at all: in the venv they skip, and in plain python3 the corpus render
+    test skips instead. A gate that cannot fire in the environment it describes
+    is the failure mode tests/test_gate_audit.py exists to catch.
+
+    Forced how: a throwaway `renderer/` package whose import raises ImportError
+    goes first on PYTHONPATH, and the CLI is copied beside it so that its own
+    directory (sys.path[0], and the PROJECT_ROOT it inserts) holds no
+    `renderer/`. Everything else resolves from vs2_convert as usual.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        with open(os.path.join(self.dir, 'ok.fs'), 'w') as f:
+            f.write(SIMPLE_ISF)
+
+    def test_render_import_failure_exits_2_even_where_moderngl_is_present(self):
+        shim = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, shim)
+        os.mkdir(os.path.join(shim, 'renderer'))
+        with open(os.path.join(shim, 'renderer', '__init__.py'), 'w') as f:
+            f.write('raise ImportError("forced for the exit-code contract")\n')
+
+        appdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, appdir)
+        app = os.path.join(appdir, 'vs2_convert.py')
+        shutil.copy2(APP, app)
+
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([shim, VS2_DIR]))
+        # The child must NOT be coverage-instrumented: it runs a COPY of the
+        # app under a temporary path, and addCleanup deletes that path before
+        # run_coverage.sh's `coverage report` step. The dangling data file
+        # makes report exit 1 with "No source for code: .../vs2_convert.py".
+        # Reproduced with `sh vs2_convert/tests/run_coverage.sh` before this
+        # line existed; the CLI-only paths are still measured because the
+        # other test_cli tests run APP at its real path.
+        env.pop('COVERAGE_PROCESS_START', None)
+        env.pop('COVERAGE_FILE', None)
+        r = subprocess.run([sys.executable, app, 'ok.fs', '--verify'],
+                           cwd=self.dir, capture_output=True, text=True,
+                           env=env)
+        self.assertEqual(
+            r.returncode, 2,
+            '--verify exited %s when the render check could not run. Exit 0 '
+            'here reports an unverified shader as verified. Output: %s'
+            % (r.returncode, (r.stdout + r.stderr)[-300:]))
+        self.assertIn('not verified', r.stdout.lower())
+        self.assertNotIn('failed', r.stdout.lower())
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
