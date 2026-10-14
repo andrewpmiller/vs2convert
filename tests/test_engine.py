@@ -139,6 +139,55 @@ class ConvertShadertoyTests(unittest.TestCase):
         self.assertIn('color.rgb', frag)
 
 
+class SnakeCaseCollisionTests(unittest.TestCase):
+    """Two source names that snake-case onto one must not emit duplicates.
+
+    Reproduced 2026-10-14: uniforms `fooBar` + `foo_bar` produced
+    params ['foo_bar', 'foo_bar'] - rejected as duplicate manifest names
+    by the external validator (validate_shader.py duplicate check).
+    """
+
+    SRC = ('uniform float fooBar;\n'
+           'uniform float foo_bar;\n'
+           'void mainImage(out vec4 fragColor, in vec2 fragCoord){\n'
+           '    fragColor = vec4(fooBar * foo_bar, 1.0, 1.0, 1.0);\n'
+           '}\n')
+
+    def test_collision_gets_distinct_names(self):
+        names = [p['name'] for p in
+                 convert(self.SRC, 'Shadertoy', 'p')['params']]
+        self.assertEqual(len(names), len(set(names)),
+                         'duplicate manifest param names: %r' % names)
+        self.assertIn('foo_bar', names)
+        self.assertIn('foo_bar_amt', names)
+
+    def test_both_uniforms_still_reach_the_body(self):
+        # the dedupe must not let the second rename re-rename the first
+        # uniform's references (foo_bar -> foo_bar_amt would leave the
+        # foo_bar knob driving nothing). Split off the /* ... */ manifest
+        # first: it names both params, so a whole-file regex would pass
+        # even if the GLSL body lost the references.
+        frag = convert(self.SRC, 'Shadertoy', 'p')['frag']
+        body = frag.split('*/', 1)[1]
+        self.assertRegex(body, r'\bfoo_bar\b')
+        self.assertRegex(body, r'\bfoo_bar_amt\b')
+
+    def test_external_validator_reports_no_duplicate_error(self):
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            'validate_shader_under_test', VALIDATOR)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'probe.frag')
+            with open(p, 'w') as f:
+                f.write(convert(self.SRC, 'Shadertoy', 'p')['frag'])
+            errors, _warns = mod.check_file(Path(p))
+        self.assertFalse([e for e in errors if 'duplicate' in e],
+                         'external validator duplicate errors: %r' % errors)
+
+
 class ConvertIsfTests(unittest.TestCase):
     def test_produces_valid_frag(self):
         result = convert(ISF, 'ISF', 'probe')

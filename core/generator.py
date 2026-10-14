@@ -727,10 +727,17 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
     body = _ensure_precision(body)
 
     params = []
+    seen = set()
+    renames = {}
     for name, info in raw_params.items():
         clean = _snake(name)
-        while clean in ENGINE_VARS:
+        # two source names can snake-case onto one (fooBar and foo_bar both
+        # become foo_bar) and the external validator rejects duplicate
+        # manifest names, so a collision gets an _amt suffix, as on the ISF
+        # path. test_engine.SnakeCaseCollisionTests.
+        while clean in seen or clean in ENGINE_VARS:
             clean += '_amt'
+        seen.add(clean)
         default = min(1.0, max(0.0, float(info['default'])))
         if any(kw in clean for kw in SPEED_KEYWORDS):
             body = re.sub(r'\b' + re.escape(name) + r'\b',
@@ -743,8 +750,15 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
                 f"param '{clean}': default {info['default']} clamped to "
                 f"{default} (knob range 0..1)")
         if clean != name:
-            body = re.sub(r'\b' + re.escape(name) + r'\b', clean, body)
+            renames[name] = clean
         params.append({'name': clean, 'default': default})
+    if renames:
+        # one pass over every rename: per-name subs in sequence let a later
+        # rename re-rename an earlier one's references (fooBar -> foo_bar,
+        # then foo_bar -> foo_bar_amt, would clobber the first knob's uses).
+        # test_engine.SnakeCaseCollisionTests.
+        body = re.sub(r'\b(?:%s)\b' % '|'.join(re.escape(n) for n in renames),
+                      lambda m: renames[m.group(0)], body)
 
     for _ax in mouse_axes:
         if not any(p['name'] == _ax for p in params):
@@ -968,8 +982,10 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
                 "multi-pass feedback (buffer/feedback refs): VS-2 is "
                 "single-pass; convert by hand via the vs2-shader-expert skill")
         # project onto the FINAL pass (the composite that writes fragColor);
-        # count comes from the header PASSES array, default 2
-        passes = 1
+        # count comes from the header PASSES array, default 2. The
+        # `passes = 1` that used to sit here was dead - the next line
+        # reassigns it unconditionally; test_gates.py body-feedback-refs
+        # covers this path.
         passes = max(1, len(header_all.get('PASSES', [])) or 1)
         final_pass = str(passes - 1)
         body = re.sub(r'\bPASSINDEX\b', final_pass, body)
