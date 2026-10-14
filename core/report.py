@@ -41,11 +41,13 @@ def supports_unicode(stream=None) -> bool:
     if 'utf' in enc:
         return True
     try:
-        (stream or sys.stdout).write(_UNICODE['ok'])
-        (stream or sys.stdout).write(_UNICODE['warn'])
-        (stream or sys.stdout).write(_UNICODE['fail'])
+        # probe by encoding, never by writing: the old probe wrote the three
+        # glyphs into the caller's stream, polluting any writable stream
+        # whose `encoding` is missing. test_cli.UnicodeProbeTests.
+        (_UNICODE['ok'] + _UNICODE['warn'] + _UNICODE['fail']).encode(
+            enc or 'utf-8')
         return True
-    except (UnicodeEncodeError, ValueError):
+    except (LookupError, UnicodeEncodeError):
         return False
 
 

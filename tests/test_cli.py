@@ -215,6 +215,22 @@ class VerdictShapeTests(unittest.TestCase):
         self.assertNotIn('failed', r.stdout.lower())
 
 
+class UnicodeProbeTests(unittest.TestCase):
+    """supports_unicode must decide without writing to the stream it probes.
+
+    The old probe tested encodability by writing the three glyphs into the
+    caller's stream, so a writable stream with no `encoding` came back True
+    with the glyphs already emitted. test_probe_writes_nothing pins it.
+    """
+
+    def test_probe_writes_nothing(self):
+        import core.report as report
+        s = io.StringIO()
+        self.assertTrue(report.supports_unicode(s))
+        self.assertEqual(s.getvalue(), '',
+                         'probe wrote into the stream it was checking')
+
+
 class VerifyContractTests(unittest.TestCase):
     """--verify must never exit 0 when the render check did not run.
 
