@@ -37,9 +37,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Exit codes:
   0  converted and (if requested) validated / rendered
-  1  validation or render FAILED - the shader is wrong
+  1  declined by a generator hard gate, or validation/render failure
   2  --verify could not RUN (missing dependency) - not a shader problem
-  3  declined: the source cannot be converted automatically
+  3  declined by the suitability gate (before conversion)
   4  could not write the output
   5  --strict, and the conversion was UNVERIFIED
 
