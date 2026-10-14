@@ -209,7 +209,8 @@ def run_verification(shader_content: str, shader_name: str) -> dict:
         return {
             "passed": False,
             "errors": ["render verification unavailable: %s "
-                       "(pip install 'vs2-convert[render]')" % e],
+                       "(rendering needs moderngl+numpy+Pillow; "
+                       "use shader-pipeline/.venv)" % e],
             "metrics": {},
         }
 

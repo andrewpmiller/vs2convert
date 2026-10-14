@@ -174,7 +174,7 @@ Examples:
         except ImportError:
             r.skipped(name, 'converted, but not verified',
                       body=['the render check could not run'],
-                      action="pip install 'vs2-convert[render]'", exit_code=2)
+                      action="rendering needs moderngl+numpy+Pillow; use shader-pipeline/.venv", exit_code=2)
             sys.exit(2)
         verification_result = run_verification(full_content, output_path.stem)
         if not verification_result["passed"]:
@@ -183,7 +183,7 @@ Examples:
             if unavailable:
                 r.skipped(name, 'converted, but not verified',
                           body=_wrap(errs),
-                          action="pip install 'vs2-convert[render]'",
+                          action="rendering needs moderngl+numpy+Pillow; use shader-pipeline/.venv",
                           exit_code=2)
                 sys.exit(2)
             compile_fail = any('compile' in e for e in errs)

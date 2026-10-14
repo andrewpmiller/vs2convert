@@ -238,13 +238,13 @@ AUDITS = [
         find='''        except ImportError:
             r.skipped(name, 'converted, but not verified',
                       body=['the render check could not run'],
-                      action="pip install 'vs2-convert[render]'", exit_code=2)
+                      action="rendering needs moderngl+numpy+Pillow; use shader-pipeline/.venv", exit_code=2)
             sys.exit(2)
 ''',
         replace='''        except ImportError:
             r.skipped(name, 'converted, but not verified',
                       body=['the render check could not run'],
-                      action="pip install 'vs2-convert[render]'", exit_code=2)
+                      action="rendering needs moderngl+numpy+Pillow; use shader-pipeline/.venv", exit_code=2)
             return 0
 ''',
         selector='test_cli.VerifyContractTests',
