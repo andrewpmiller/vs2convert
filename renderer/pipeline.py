@@ -295,16 +295,25 @@ def run_verification(shader_content: str, shader_name: str) -> dict:
         dense = frames[len(TIME_SAMPLES):]
         means, stds, alphas = zip(*[_stats(f) for f in wide])
         mean, std, alpha = max(means), max(stds), max(alphas)
-        def _delta(imgs):
+        def _delta(imgs, consecutive=False):
             if len(imgs) < 2:
                 return 0.0
             lums = [f[..., :3].mean(axis=2) for f in imgs]
+            if consecutive:
+                return max(float(np.abs(lums[i] - lums[i + 1]).mean())
+                           for i in range(len(lums) - 1))
             return max(float(np.abs(lums[i] - lums[j]).mean())
                        for i in range(len(lums))
                        for j in range(i + 1, len(lums)))
 
         wide_motion = _delta(wide)
-        dense_motion = _delta(dense)
+        # the dense run is 60 one-per-frame samples: what the probe looks for
+        # is per-frame animation, i.e. the consecutive delta, while all-pairs
+        # costs C(60,2)=1770 pixel diffs. Slow drift between distant frames
+        # is the wide probe's job (3 frames, still all-pairs).
+        # test_shader_pipeline.test_verify_fails_a_frozen_animated_shader
+        # keeps a motionless shader failing this gate.
+        dense_motion = _delta(dense, consecutive=True)
         distinct = len({f.tobytes() for f in dense})
         # A shader animates if EITHER probe sees change: smooth shaders show it
         # across wide samples, discrete per-frame ones within the dense run.
