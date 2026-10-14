@@ -123,6 +123,14 @@ MUTATIONS = [
              'test_magnitude_fidelity_round_trip was added.'),
     ),
     Mutation(
+        name='generator: mouse-axis drop eats swizzles',
+        path='core/generator.py',
+        find="body = re.sub(r'(?<![\\w.])' + _ax + r'\\b', '0.5', body)",
+        replace="body = re.sub(r'\\b%s\\b' % _ax, '0.5', body)",
+        selector='test_engine.MouseBudgetTests',
+        why='Regression pin for audit finding 1.',
+    ),
+    Mutation(
         name='generator: drop the 7-parameter budget',
         path='core/generator.py',
         find='if len(manifest) >= MAX_PARAMS:',

@@ -751,7 +751,9 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
             if len(params) >= MAX_PARAMS:
                 report['warnings'].append(
                     "iMouse axis '%s' dropped: over the 7-param budget" % _ax)
-                body = re.sub(r'\b%s\b' % _ax, '0.5', body)
+                # dropping the axis must not eat member access: \bx\b also matches the x in
+                # resolution.x, and produced `resolution.0.5` (invalid GLSL). test_engine.
+                body = re.sub(r'(?<![\w.])' + _ax + r'\b', '0.5', body)
                 continue
             params.append({'name': _ax, 'default': 0.5})
     return body, params

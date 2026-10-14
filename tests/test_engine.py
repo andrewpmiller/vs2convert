@@ -1015,5 +1015,33 @@ class HardGateTests(unittest.TestCase):
         self.assertIn('iChannel', str(ctx.exception))
 
 
+class MouseBudgetTests(unittest.TestCase):
+    """Over-budget iMouse axis drop (generator._convert_shadertoy)."""
+
+    SRC = '''/*{"parameters":[
+ {"name":"a","default":0.5},{"name":"b","default":0.5},{"name":"c","default":0.5},
+ {"name":"d","default":0.5},{"name":"e","default":0.5},{"name":"f","default":0.5},
+ {"name":"g","default":0.5}]}*/
+void mainImage(out vec4 fragColor, in vec2 fragCoord){
+  vec2 uv = fragCoord / iResolution.xy;
+  float m = iMouse.x / iResolution.x;
+  fragColor = vec4(uv, m, 1.0);
+}
+'''
+
+    def test_dropped_mouse_axis_does_not_touch_swizzles(self):
+        """test_engine: the drop substitution uses a lookbehind so \bx\b no
+        longer matches the x in `resolution.x`; without it the emitted GLSL
+        contained `resolution.0.5` (invalid). This test fails on the
+        unguarded `re.sub(r'\\b%s\\b' % _ax, ...)`."""
+        report = convert(self.SRC, 'Shadertoy', 't')
+        frag = report['frag']
+        self.assertNotIn('resolution.0.5', frag, 'swizzle corrupted by axis drop')
+        self.assertNotIn('uv.0.5', frag, 'swizzle corrupted by axis drop')
+        self.assertTrue(
+            any("iMouse axis 'x' dropped" in w for w in report['warnings']),
+            'the drop itself must still happen')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
