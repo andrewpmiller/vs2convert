@@ -139,18 +139,6 @@ MUTATIONS = [
         why='Regresses hard rule 2 (max 7 manifest parameters).',
     ),
 
-    # ---- mapper -------------------------------------------------------
-    Mutation(
-        name='mapper: drop twist_speed from speed_keywords',
-        path='core/mapper.py',
-        find="speed_keywords = ['speed', 'rate', 'frequency', 'freq', 'twist_speed']",
-        replace="speed_keywords = ['speed', 'rate', 'frequency', 'freq']",
-        selector='test_validator.SpeedKeywordParityTests',
-        equivalent=True,
-        why=('Same no-op as the validator side. Unkillable by behaviour; the '
-             'structural superset assertion covers it.'),
-    ),
-
     # ---- detector: the suitability gate --------------------------------
     Mutation(
         name='detector: suitability verdict always True',

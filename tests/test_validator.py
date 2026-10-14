@@ -110,31 +110,31 @@ class EngineVarRedeclTests(unittest.TestCase):
 
 
 class SpeedKeywordParityTests(unittest.TestCase):
-    """ADJUDICATION: the validator's keyword list must cover the mapper's.
+    """ADJUDICATION: the validator's keyword list must cover the generator's.
 
-    A review found validator.py:104 missing 'twist_speed', which mapper.py:114
-    has. The validator is defense-in-depth: it exists to catch what the mapper
-    missed, so a NARROWER list defeats the purpose. Pinned so the two lists
-    cannot silently drift apart again.
+    A review found validator.py:104 missing 'twist_speed'. The validator is
+    defense-in-depth: it exists to catch what the conversion path missed, so
+    a NARROWER list defeats the purpose. The live counterpart list is the
+    generator's SPEED_KEYWORDS (core/generator.py); the dead mapper module
+    it used to compare against was deleted in the audit-8 cleanup. Pinned so
+    the two lists cannot silently drift apart again.
     """
 
-    def test_validator_keywords_cover_mapper_keywords(self):
-        from core.mapper import _is_speed_parameter
+    def test_validator_catches_each_speed_keyword(self):
         for kw in ['speed', 'rate', 'frequency', 'freq', 'twist_speed']:
             probe = '/*{"parameters": [{"name": "x_%s", "default": 0.5}]}*/' % kw
             self.assertTrue(
                 _has_custom_speed_params(probe),
-                "validator misses mapper speed keyword '%s'" % kw)
-            self.assertTrue(_is_speed_parameter('x_%s' % kw, {}))
+                "validator misses speed keyword '%s'" % kw)
 
-    def test_validator_keyword_list_is_a_superset_of_mapper_list(self):
+    def test_validator_keyword_list_is_a_superset_of_generator_list(self):
         """Structural pin, because the behavioural test above cannot catch
         keyword-list drift here.
 
         Deleting 'twist_speed' from the validator is a NO-OP: the substring
         'speed' already matches any name containing 'twist_speed'. That makes
         it an equivalent mutant - the behaviour is identical, so no
-        behaviour-based test can fail. Pinned structurally instead so the two
+        behaviour-based test can fail. Pinned structurally instead so the
         lists cannot silently diverge.
 
         (Recorded because a review reported the missing 'twist_speed' as a
@@ -142,8 +142,8 @@ class SpeedKeywordParityTests(unittest.TestCase):
         a behavioural defect.)
         """
         import re as _re
+        from core.generator import SPEED_KEYWORDS
         val_src = _read(os.path.join(VS2_DIR, 'validators', 'validator.py'))
-        map_src = _read(os.path.join(VS2_DIR, 'core', 'mapper.py'))
 
         def _list_from(src, varname):
             m = _re.search(varname + r"\s*=\s*\[(.*?)\]", src, _re.DOTALL)
@@ -151,11 +151,11 @@ class SpeedKeywordParityTests(unittest.TestCase):
             return set(_re.findall(r"'([^']+)'", m.group(1)))
 
         val_kws = _list_from(val_src, 'speed_patterns')
-        map_kws = _list_from(map_src, 'speed_keywords')
+        gen_kws = set(SPEED_KEYWORDS)
         self.assertTrue(
-            map_kws.issubset(val_kws),
-            "validator keywords %s do not cover mapper keywords %s"
-            % (sorted(val_kws), sorted(map_kws)))
+            gen_kws.issubset(val_kws),
+            "validator keywords %s do not cover generator keywords %s"
+            % (sorted(val_kws), sorted(gen_kws)))
 
     def test_speed_check_reads_params_not_raw_text(self):
         """The pre-fix version regexed the whole file, so the word 'speed' in
@@ -291,11 +291,22 @@ class SuitabilityGateTests(unittest.TestCase):
         r = check_suitability(src)
         self.assertFalse(r['suitable'], 'real HLSL lerp() was not detected')
 
+    def test_camelcase_source_params_do_not_error(self):
+        """A camelCase SOURCE name is normal (iResolution etc.); the
+        generator snake-cases the OUTPUT and the validator checks that.
+        Regression: the old check appended its error AFTER `suitable` was
+        computed, so it was invisible twice over."""
+        r = check_suitability('uniform float badName;\nvoid main(){}')
+        self.assertEqual(r['errors'], [],
+                         'camelCase source param wrongly errored: %s' % r['errors'])
+        self.assertTrue(r['suitable'])
+
     def test_suitable_is_consistent_with_errors(self):
         """suitable must be exactly `no errors`, or the CLI gate is a lie."""
         for src in [MINIMAL_VALID,
                     'vec2 resolution;\nvoid main(){}',
-                    'void main(){ fragColor = texture(imageTex, texCoord); }']:
+                    'void main(){ fragColor = texture(imageTex, texCoord); }',
+                    'uniform float badName;\nvoid main(){}']:
             r = check_suitability(src)
             self.assertEqual(r['suitable'], len(r['errors']) == 0,
                              'suitable/errors disagree for: %r' % src[:40])

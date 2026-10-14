@@ -6,7 +6,6 @@ Bundled rules from validate_shader.py and golden examples.
 
 import json
 import re
-from pathlib import Path
 
 from .textutil import code_only
 
@@ -21,7 +20,6 @@ from .textutil import code_only
 ISF_INPUTS_RE = re.compile(r'/\*.*?"INPUTS".*?\*/', re.DOTALL)
 VS2_PARAMETERS_RE = re.compile(r'/\*.*?"parameters".*?\*/', re.DOTALL)
 ISF_MANIFEST_RE = re.compile(r'/\*.*?"(?:INPUTS|parameters)".*?\*/', re.DOTALL)
-ISF_CODE_RE = re.compile(r'(uniform\s+float\s+iTime|uniform\s+vec2\s+iResolution|uniform\s+vec2\s+iMouse|uniform\s+sampler2D\s+iChannel\d+)')
 
 # Shadertoy: Has mainImage() or main() with iTime/iResolution references
 SHADERTOY_MAINIMAGE_RE = re.compile(r'mainImage\s*\(\s*.*?\)')
@@ -70,15 +68,6 @@ def detect_format(source: str) -> dict:
         if line and not line[0].isspace() and ENGINE_VAR_RE.match(line):
             errors.append(f"Line {i}: redeclares engine var '{ENGINE_VAR_RE.match(line).group(2)}' at global scope")
             break
-    
-    # Check for Shadertoy globals without #define alias
-    # In VS-2, iTime/iResolution etc. are globals, so don't flag them as errors
-    SHADERTOY_GLOBALS = ['iTime', 'iResolution', 'iMouse', 'iChannel0', 'iChannel1', 'iChannel2', 'iChannel3', 'iDate']
-    defines = set()
-    for line in code.split('\n'):
-        dm = re.match(r'^\s*#define\s+(\w+)', line)
-        if dm:
-            defines.add(dm.group(1))
     
     # iTime / iResolution / iMouse are VS-2 globals (or plain renames), so
     # they are not errors. iChannel0..3 previously WAS an error demanding an
@@ -168,10 +157,11 @@ def check_suitability(source: str) -> dict:
 
     result["suitable"] = len(result["errors"]) == 0
     
-    # Check parameter naming (snake_case required)
-    for name in params:
-        if not re.match(r'^[a-z][a-z0-9_]*$', name):
-            result["errors"].append(f"Parameter '{name}' is not snake_case")
+    # snake_case is guaranteed at OUTPUT time (generator._snake) and checked
+    # on the output by validators/validator.py; a camelCase SOURCE name is
+    # normal (iResolution etc.) and must not decline. The check that used to
+    # live here appended errors AFTER `suitable` was computed, so it was
+    # invisible twice over. test_validator.SuitabilityGateTests.
     
     # Check for speed parameters
     SPEED_PATTERNS = ['speed', 'rate', 'frequency', 'freq', 'twist_speed']
@@ -186,8 +176,8 @@ def _extract_parameters(source: str) -> list:
     """Extract parameter names from manifest (GLSL order: uniform <type> <name>;)"""
     params = []
 
-    # Manifest: strip comment delimiters before json.loads (same proven
-    # approach as core/mapper.py - group(0) includes /* */ and always throws)
+    # Manifest: strip comment delimiters before json.loads (group(0)
+    # includes /* */ and always throws)
     import json
     for block in re.findall(r'/\*(.*?)\*/', source, re.DOTALL):
         try:

@@ -6,7 +6,6 @@ Bundled rules from validation-checklist.md and golden examples.
 
 import json
 import re
-from pathlib import Path
 
 
 def run_validation(content: str, shader_name: str) -> dict:
@@ -115,7 +114,7 @@ def _has_custom_speed_params(content: str) -> bool:
 
 def _iter_manifests(content: str):
     """Yield parsed JSON dicts from all /* {json} */ comment blocks.
-    Proven approach from core/mapper.py: strip delimiters, try each block."""
+    Strip delimiters, try each block."""
     for block in re.findall(r'/\*(.*?)\*/', content, re.DOTALL):
         try:
             data = json.loads(block.strip())
