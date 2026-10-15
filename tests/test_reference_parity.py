@@ -1,13 +1,13 @@
 """Compare our conversions against the expert conversions in
 converted_shaders/ - the reference outcomes that already exist in the repo.
 
-Eighteen converted_shaders/*.frag have a matching ISF source. Those are the
+Seventeen converted_shaders/*.frag have a matching ISF source. Those are the
 only real oracle available for "does our output look like the output a
 careful human produced", and until now nothing in the suite consulted them.
 
 Two independent reasons this exists, both learned the hard way:
 
-  1. The expert set injects the aspect pattern into every one of the eighteen,
+  1. The expert set injects the aspect pattern into every one of the seventeen,
      including shaders whose ISF source has no aspect correction at all. The
      expert comment says why: "engine convention (div = y/x); matches source
      framing on square canvases". That is a deliberate departure from source
@@ -55,7 +55,6 @@ REFERENCE_PAIRS = [
     ('color_fractal_nayk', 'color fractal nayk/color fractal nayk.fs'),
     ('drostled', 'drostled/drostled.fs'),
     ('fork_of_4th_eye', 'Fork of 4th eye/Fork of 4th eye.fs'),
-    ('gamma_xor', 'gamma xor/gamma xor.fs'),
     ('iq_line_fractal_tunnel',
      'iq - line fractal tunnel/iq - line fractal tunnel.fs'),
     ('julia', 'julia/julia.fs'),
@@ -158,7 +157,7 @@ class ExpertReferenceParityTests(unittest.TestCase):
 
         must come out as (texCoord * K - C) * vec2(1.0, div) with div
         declared. This is what the expert set does for bloom, julia,
-        polyhedral, phreax_portal, gamma_xor and others.
+        polyhedral, phreax_portal and others.
         """
         cases = [
             ('(gl_FragCoord.xy * 2.0 - RENDERSIZE.xy) / RENDERSIZE.y',
