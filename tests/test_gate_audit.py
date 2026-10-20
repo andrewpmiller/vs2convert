@@ -184,7 +184,7 @@ AUDITS = [
     GateBreak(
         id='perf-budget-warning',
         guards='the external validator warning on a loop bound over 100',
-        path='.cline/skills/vs2-shader-expert/scripts/validate_shader.py',
+        path='.claude/skills/vs2-shader-expert/scripts/validate_shader.py',
         find='        if bound > 100:',
         replace='        if bound > 300:',
         selector='test_validator.PerfBudgetTests',

@@ -99,7 +99,7 @@ class IsfCorpusTests(unittest.TestCase):
             for name, _ in failures:
                 self.assertIn(name, EXPECTED_DARK,
                               'new dark/flat failure: %s' % name)
-            val = os.path.join(REPO_ROOT, '.cline', 'skills',
+            val = os.path.join(REPO_ROOT, '.claude', 'skills',
                                'vs2-shader-expert', 'scripts',
                                'validate_shader.py')
             proc = subprocess.run([sys.executable, val, outdir],

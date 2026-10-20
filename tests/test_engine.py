@@ -24,7 +24,7 @@ def _read_fixture(name):
     with open(os.path.join(here, name)) as f:
         return f.read()
 
-VALIDATOR = os.path.join(REPO_ROOT, '.cline', 'skills', 'vs2-shader-expert',
+VALIDATOR = os.path.join(REPO_ROOT, '.claude', 'skills', 'vs2-shader-expert',
                          'scripts', 'validate_shader.py')
 
 SHADERTOY = """// test

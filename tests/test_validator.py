@@ -91,7 +91,7 @@ class UniformRuleAdjudicationTests(unittest.TestCase):
         """Parity with the authoritative gate. If the external validator ever
         relaxes this, this test fails and the question is reopened
         deliberately rather than by a confident review."""
-        validator = os.path.join(REPO_ROOT, '.cline', 'skills',
+        validator = os.path.join(REPO_ROOT, '.claude', 'skills',
                                  'vs2-shader-expert', 'scripts',
                                  'validate_shader.py')
         src = _read(validator)
@@ -339,7 +339,7 @@ class PerfBudgetTests(unittest.TestCase):
     ])
 
     def _validator_output(self, body):
-        validator = os.path.join(REPO_ROOT, '.cline', 'skills',
+        validator = os.path.join(REPO_ROOT, '.claude', 'skills',
                                  'vs2-shader-expert', 'scripts',
                                  'validate_shader.py')
         with tempfile.TemporaryDirectory() as d:
