@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vs2convert"
+version = "0.1.0"
+description = "Convert Shadertoy, ISF and GLSLSandbox shaders to VS-2 .frag files"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Andrew Miller" }]
+keywords = ["shader", "glsl", "vs2", "shadertoy", "isf"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Graphics",
+]
+dependencies = []
+
+[project.optional-dependencies]
+render = ["moderngl", "numpy", "Pillow"]
+dev = ["pytest"]
+
+[project.scripts]
+vs2convert = "vs2convert.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"vs2convert.renderer" = ["assets/*.png"]
