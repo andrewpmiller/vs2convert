@@ -3,6 +3,7 @@
 ```sh
 python -m pytest            # whole suite
 python -m pytest -q         # same, quieter
+sh tests/run_coverage.sh    # statement coverage, CLI subprocesses included
 ```
 
 The suite is self-contained: it needs only the package and its `dev` extra

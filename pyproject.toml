@@ -27,7 +27,7 @@ Issues = "https://github.com/andrewpmiller/vs2convert/issues"
 
 [project.optional-dependencies]
 render = ["moderngl", "numpy", "Pillow"]
-dev = ["pytest"]
+dev = ["pytest", "coverage"]
 
 [project.scripts]
 vs2convert = "vs2convert.cli:main"
