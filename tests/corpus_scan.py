@@ -40,7 +40,8 @@ def discover(root=None):
                        if not d.startswith('.')
                        and d not in ('__pycache__', 'converted_shaders',
                                      'factory-examples', 'factory-references',
-                                     'shader-pipeline', 'node_modules')]
+                                     'shader-pipeline', 'node_modules',
+                                     'shaders-to-convert')]
         exts = {os.path.splitext(f)[1].lower() for f in filenames}
         if exts & SOURCE_EXT and len(filenames) >= 2:
             found.append(dirpath)

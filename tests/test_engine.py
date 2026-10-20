@@ -791,6 +791,7 @@ class IsfImageInputTests(unittest.TestCase):
 
 _SKIP_DIRS = {'.git', '__pycache__', 'converted_shaders', 'factory-examples',
               'factory-references', 'shader-pipeline', 'node_modules',
+              'shaders-to-convert',
               'tests', 'templates', 'core', 'validators', 'renderer'}
 
 

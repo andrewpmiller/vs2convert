@@ -35,6 +35,7 @@ def _collections():
     # collections live inside it. Code subdirs are skipped individually.
     skip = {'.git', '__pycache__', 'converted_shaders', 'factory-examples',
             'factory-references', 'shader-pipeline', 'node_modules',
+            'shaders-to-convert',
             'tests', 'templates', 'core', 'validators', 'renderer'}
     found = []
     for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
