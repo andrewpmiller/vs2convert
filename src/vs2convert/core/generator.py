@@ -38,7 +38,16 @@ PRECISION_RE = re.compile(r'#ifdef\s+GL_ES')
 
 
 class ConversionError(Exception):
-    """Fatal: source cannot be converted automatically."""
+    """Fatal: source cannot be converted automatically.
+
+    `gate` is a stable id from core.gates.GATES (or None for a bare format
+    complaint). The public API turns it into a structured Rejection; it is
+    set at the raise site so no message-to-id table has to be maintained.
+    """
+
+    def __init__(self, message: str, gate: str = None):
+        super().__init__(message)
+        self.gate = gate
 
 
 def _fmt_num(v) -> str:
@@ -464,8 +473,12 @@ def _flip_image_sample_v(body: str) -> str:
     return ''.join(out)
 
 
-def _build_manifest(params: list, shader_name: str) -> str:
-    """params: [{'name': ..., 'default': ...}] already sanitized and clamped."""
+def _build_manifest(params: list, shader_name: str) -> tuple:
+    """params: [{'name': ..., 'default': ...}] already sanitized and clamped.
+
+    Returns (header, manifest): the serialised comment written to the .frag
+    and the same data as a dict, so callers need not re-parse it.
+    """
     manifest = {
         "author": "VS-2 Convert",
         "color": "#ffffff",
@@ -477,7 +490,7 @@ def _build_manifest(params: list, shader_name: str) -> str:
         "url": "",
         "uuid": str(_uuid.uuid4()),
     }
-    return "/*\n" + json.dumps(manifest, indent=4) + "\n*/\n\n"
+    return "/*\n" + json.dumps(manifest, indent=4) + "\n*/\n\n", manifest
 
 
 
@@ -509,7 +522,7 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
         raise ConversionError(
             "reads %d distinct iChannels (iChannel%s): VS-2 exposes a single "
             "imageTex, so the channels cannot be preserved. Convert by hand"
-            % (len(_channels), ''.join(_channels)))
+            % (len(_channels), ''.join(_channels)), gate='shadertoy-multi-channel')
     if _channels:
         # SAFETY: a Shadertoy iChannel is a binding SLOT, not a known image.
         # Per Shadertoy's own model it may hold a texture, a feedback buffer,
@@ -542,7 +555,8 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
                 "imageTex and cannot represent it; convert it by hand. "
                 "Metadata said: %s"
                 % (_slot, '; '.join(_notes) or 'unrepresentable sampler',
-                   '; '.join(_notes) or '?'))
+                   '; '.join(_notes) or '?'),
+                gate='shadertoy-unrepresentable-channel')
         else:
             report['warnings'].append(
                 "UNVERIFIED: iChannel%s is a Shadertoy binding slot, not a "
@@ -677,7 +691,8 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
         else:
             body = body.replace('fragCoord', 'texCoord')
     elif not re.search(r'\bvoid\s+main\s*\(', body):
-        raise ConversionError("no mainImage() or main() entry point found")
+        raise ConversionError("no mainImage() or main() entry point found",
+                              gate='missing-entry-point')
 
     body = _coalesce_frag_color_writes(body)
     body = _rewrite_output(body)
@@ -752,7 +767,8 @@ def _convert_glslsandbox(source: str, report: dict, meta: dict = None) -> tuple:
     body = _rewrite_output(body)
     body = _ensure_precision(body)
     if not re.search(r'\bvoid\s+main\s*\(', body):
-        raise ConversionError("no main() entry point found")
+        raise ConversionError("no main() entry point found",
+                              gate='missing-entry-point')
     return body, pan_params
 
 
@@ -768,7 +784,8 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
         except (json.JSONDecodeError, ValueError):
             inputs = None
     if not inputs:
-        raise ConversionError("ISF INPUTS block not found or not parseable")
+        raise ConversionError("ISF INPUTS block not found or not parseable",
+                              gate='isf-parse-failure')
 
     # --- hard gates before any transformation ---
     header_all = {}
@@ -781,7 +798,7 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
             any(p.get('TARGET') for p in header_all.get('PASSES', [])):
         raise ConversionError(
             "feedback buffer (ISF TARGET input/pass): VS-2 is single-pass "
-            "with no feedback; convert it by hand")
+            "with no feedback; convert it by hand", gate='isf-feedback-buffer')
     # BUNDLED image resources: a top-level "IMPORTED" dict naming files the
     # composition ships with, e.g. {"blendImage": {"PATH": "Hexagon.tiff"}}.
     # Per docs.isf.video/ref_json and the canonical Test-ImportedImage.fs.
@@ -806,7 +823,8 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
                 f"bundled image resources in IMPORTED ({', '.join(_used[:4])}): "
                 f"the body samples them, and they are image files shipped with "
                 f"the .fs, so VS-2 has nowhere to put them. Supply the image in "
-                f"VS-2 instead, or convert it by hand")
+                f"VS-2 instead, or convert it by hand",
+                gate='isf-imported-resources')
         report['warnings'].append(
             "IMPORTED declares %d image resource(s) that the body never "
             "samples, so they were dropped. Harmless, but check the source if "
@@ -817,7 +835,7 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
     if re.search(r'\btexture2D\s*\(|\btex2D\s*\(', source):
         raise ConversionError(
             "bundled texture input (texture2D/tex2D): hard gate; convert by "
-            "hand")
+            "hand", gate='glsl-texture2d')
 
     body = source[m.end():] if m else source
     body = _strip_uniforms(body)
@@ -917,7 +935,8 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
             "declares %d distinct image inputs (%s): VS-2 binds a single "
             "image to imageTex, so they cannot all be preserved. Convert by "
             "hand"
-            % (len(_image_inputs), ', '.join(_image_inputs[:4])))
+            % (len(_image_inputs), ', '.join(_image_inputs[:4])),
+            gate='isf-multiple-image-inputs')
 
     if seen_image:
         # ISF image accessors (docs.isf.video/ref_json): IMG_NORM_PIXEL(name, uv)
@@ -936,7 +955,7 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
         if re.search(r'\bbuffer[A-D]\b|\bBuffer[A-D]\b|\bfeedback\b', body):
             raise ConversionError(
                 "multi-pass feedback (buffer/feedback refs): VS-2 is "
-                "single-pass; convert it by hand")
+                "single-pass; convert it by hand", gate='body-feedback-refs')
         # project onto the FINAL pass (the composite that writes fragColor);
         # count comes from the header PASSES array, default 2. The
         # `passes = 1` that used to sit here was dead - the next line
@@ -1195,7 +1214,9 @@ def convert(source: str, fmt: str, shader_name: str,
              force: bool = False, meta: dict = None) -> dict:
     """Convert source shader to a complete VS-2 .frag string.
 
-    Returns {'frag': str, 'warnings': [..], 'baked': [..], 'params': [..]}.
+    Returns {'frag': str, 'manifest': dict, 'warnings': [..], 'baked': [..],
+    'params': [..]} - `params` are the ones actually emitted, so at most
+    MAX_PARAMS entries.
     Raises ConversionError for sources that cannot be converted safely.
     """
     report = {'warnings': [], 'baked': [], 'params': [], 'meta': meta or {}}
@@ -1205,7 +1226,7 @@ def convert(source: str, fmt: str, shader_name: str,
     if re.search(r'\b(frac|lerp|tex2D|texture2D)\s*\(', code_only(source)):
         raise ConversionError(
             "HLSL/bundled-texture source (MilkDrop): multi-pass merge is not "
-            "automated; convert it by hand")
+            "automated; convert it by hand", gate='hlsl-milkdrop')
 
     fmt_map = {
         'Shadertoy': _convert_shadertoy,
@@ -1214,7 +1235,8 @@ def convert(source: str, fmt: str, shader_name: str,
         'PlainGLSL': _convert_shadertoy,
     }
     if fmt not in fmt_map:
-        raise ConversionError(f"unsupported format: {fmt}")
+        raise ConversionError(f"unsupported format: {fmt}",
+                              gate='unsupported-format')
 
     try:
         body, params = fmt_map[fmt](source, report, meta=meta)
@@ -1230,7 +1252,8 @@ def convert(source: str, fmt: str, shader_name: str,
             "broken. Treat it as a starting point for a manual conversion, "
             "not as a working shader.")
         body, params = _forced_fallback(source, report)
-    manifest = _build_manifest(params, shader_name)
-    report['params'] = params
-    report['frag'] = manifest + body
+    header, manifest = _build_manifest(params, shader_name)
+    report['params'] = params[:MAX_PARAMS]
+    report['manifest'] = manifest
+    report['frag'] = header + body
     return report

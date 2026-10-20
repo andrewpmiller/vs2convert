@@ -44,9 +44,11 @@ def detect_format(source: str) -> dict:
             - format: str (ISF, Shadertoy, GLSLSandbox, MilkDrop, PlainGLSL)
             - suitable: bool
             - errors: list[str]
+            - error_gates: list[str] parallel to errors, ids from core.gates.GATES
             - warnings: list[str]
     """
     errors = []
+    error_gates = []
     warnings = []
     
     # HLSL/API checks run against code only: a comment mentioning `lerp(` is
@@ -56,10 +58,13 @@ def detect_format(source: str) -> dict:
     # Check for HLSL leftovers (definitely not suitable)
     if HLSL_FRACTION_RE.search(code):
         errors.append("Contains HLSL function 'frac()' (use 'fract()' in GLSL)")
+        error_gates.append('hlsl-milkdrop')
     if HLSL_LERP_RE.search(code):
         errors.append("Contains HLSL function 'lerp()' (use 'mix()' in GLSL)")
+        error_gates.append('hlsl-milkdrop')
     if HLSL_TEXTURE2D_RE.search(code):
         errors.append("Contains HLSL function 'texture2D()' or 'tex2D()' (use 'texture()' in GLSL)")
+        error_gates.append('hlsl-milkdrop')
     
     # Check for engine variable redeclaration
     ENGINE_VARS = ['resolution', 'time', 'texCoord', 'color', 'alpha', 'imageTex', 'imageResolution']
@@ -67,6 +72,7 @@ def detect_format(source: str) -> dict:
     for i, line in enumerate(code.split('\n'), 1):
         if line and not line[0].isspace() and ENGINE_VAR_RE.match(line):
             errors.append(f"Line {i}: redeclares engine var '{ENGINE_VAR_RE.match(line).group(2)}' at global scope")
+            error_gates.append('engine-var-redeclaration')
             break
     
     # iTime / iResolution / iMouse are VS-2 globals (or plain renames), so
@@ -86,6 +92,7 @@ def detect_format(source: str) -> dict:
             "imageTex, so the channels would have to be collapsed. Convert by "
             "hand"
             % (len(_channels_used), ''.join(_channels_used)))
+        error_gates.append('shadertoy-multi-channel')
     
     # Detect format
     format_name = "PlainGLSL"
@@ -112,6 +119,7 @@ def detect_format(source: str) -> dict:
         "format": format_name,
         "suitable": len(errors) == 0,
         "errors": errors,
+        "error_gates": error_gates,
         "warnings": warnings
     }
 
@@ -124,6 +132,8 @@ def check_suitability(source: str) -> dict:
         dict with keys:
             - suitable: bool
             - errors: list[str]
+            - error_gates: list[str]
+            - format: str
             - warnings: list[str]
     """
     # Reuse detection errors
@@ -135,6 +145,7 @@ def check_suitability(source: str) -> dict:
     params = _extract_parameters(source)
     if len(params) > 7:
         result["errors"].append(f"Too many parameters: {len(params)} (max 7)")
+        result["error_gates"].append('too-many-parameters')
 
     # Image-input shaders are NOT declined.
     #

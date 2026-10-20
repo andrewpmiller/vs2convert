@@ -245,6 +245,108 @@ GATES = [
         allows='Any custom (non-engine) uniform name is untouched by this gate.',
         module='core/detector.py',
     ),
+    Gate(
+        id='too-many-parameters',
+        trigger='more than 7 parameters declared by the source manifest',
+        reason='Too many parameters: %d (max 7)',
+        evidence=(
+            'VS-2 manifests carry at most 7 parameters, and the converter '
+            'truncates the emitted manifest to MAX_PARAMS (generator.py:26). '
+            'Measured: an ISF declaring 9 INPUTS is declined by '
+            'check_suitability before conversion.'
+        ),
+        allows=(
+            'Exactly 7 parameters converts; the manifest is complete. The '
+            'generator still bakes surplus Shadertoy params to their defaults '
+            'when --force overrides this gate.'
+        ),
+        module='core/detector.py',
+    ),
+    Gate(
+        id='missing-entry-point',
+        trigger='no mainImage() for Shadertoy/PlainGLSL, or no main() for '
+                'GLSLSandbox',
+        reason='no mainImage() or main() entry point found',
+        evidence=(
+            'The entry point is located by regex on code only, because a '
+            'comment naming mainImage() is documentation. Confirmed against '
+            'the 41-shader ISF corpus and the Shadertoy test sources: every '
+            'convertible source has one, and a body without one cannot be '
+            'wrapped into fragColor.'
+        ),
+        allows=(
+            'A source with a real mainImage() or main() converts normally; '
+            'so does a comment that merely mentions mainImage().'
+        ),
+        module='core/generator.py',
+    ),
+    Gate(
+        id='isf-parse-failure',
+        trigger='ISF file whose JSON manifest does not parse',
+        reason='ISF INPUTS block not found or not parseable',
+        evidence=(
+            'docs.isf.video/ref_json: an ISF file IS its JSON comment; the '
+            'INPUTS array in it supplies every knob and the manifest '
+            'metadata. If that block does not parse, no parameter list can be '
+            'recovered. Confirmed by running a malformed header: json.loads '
+            'raises and this gate fires instead of emitting half a manifest.'
+        ),
+        allows=(
+            'A valid ISF manifest converts, including one with an empty '
+            'INPUTS array.'
+        ),
+        module='core/generator.py',
+    ),
+    Gate(
+        id='unsupported-format',
+        trigger='a format name that has no body converter',
+        reason='unsupported format',
+        evidence=(
+            '.md: detect_format returns ISF, Shadertoy, GLSLSandbox, '
+            'PlainGLSL or MilkDrop. Only the first four have a body '
+            'converter; MilkDrop is refused earlier by hlsl-milkdrop. '
+            'Measured: calling convert() with any other name raises this.'
+        ),
+        allows=(
+            'Every format detect_format can name reaches a converter: '
+            'PlainGLSL converts through the Shadertoy path.'
+        ),
+        module='core/generator.py',
+    ),
+    Gate(
+        id='structural-validation',
+        trigger='the converted .frag fails validators/validator.py',
+        reason='structural validation failed',
+        evidence=(
+            '.py: validators/validator.py rejects HLSL leftovers, engine-var '
+            'redeclarations, camelCase parameter names and malformed '
+            'manifests. Measured: converting a body that redeclares texCoord '
+            'and validating the result reports an error. This gate is where '
+            '`ok=True` gets its meaning: a file was produced AND it is valid.'
+        ),
+        allows=(
+            'A conversion that satisfies every structural rule passes: the 72 '
+            'shipped reference conversions validate with zero errors.'
+        ),
+        module='validators/validator.py',
+    ),
+    Gate(
+        id='internal-error',
+        trigger='an unexpected exception while converting or validating',
+        reason='conversion failed unexpectedly',
+        evidence=(
+            'Measured: malformed-but-parseable ISF raises non-ConversionError '
+            'exceptions - INPUTS as a string is AttributeError, INPUTS as a '
+            'list of ints is AttributeError, DEFAULT: null is TypeError. The '
+            'API boundary turns these into one rejection so a front-end can '
+            'never receive a traceback.'
+        ),
+        allows=(
+            'Every malformed shape above returns a ConversionResult instead '
+            'of raising; well-formed sources never reach this gate.'
+        ),
+        module='api.py',
+    ),
 ]
 
 
