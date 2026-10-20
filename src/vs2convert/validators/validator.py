@@ -30,7 +30,7 @@ def run_validation(content: str, shader_name: str) -> dict:
         if re.search(r'\btexture2D\s*\(|\btex2D\s*\(', content):
             errors.append(
                 "texture2D()/tex2D() present - bundled texture input is a "
-                "hard gate; convert by hand via the vs2-shader-expert skill")
+                "hard gate; convert it by hand")
         else:
             errors.append("Contains HLSL functions (frac, lerp) or gl_FragColor")
     

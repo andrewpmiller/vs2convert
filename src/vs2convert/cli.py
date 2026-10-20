@@ -25,10 +25,6 @@ import json
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
-
 def main():
     """Main entry point for VS-2 shader conversion."""
     parser = argparse.ArgumentParser(
@@ -71,11 +67,11 @@ Examples:
                         help="Show every step and the full text of each note")
     args = parser.parse_args()
 
-    from core.report import Reporter
-    from core.detector import detect_format, check_suitability
-    from core.shadertoy_meta import load_meta
-    from core.generator import convert, ConversionError
-    from validators.validator import run_validation
+    from .core.report import Reporter
+    from .core.detector import detect_format, check_suitability
+    from .core.shadertoy_meta import load_meta
+    from .core.generator import convert, ConversionError
+    from .validators.validator import run_validation
 
     r = Reporter(verbose=args.verbose)
     name = Path(args.input).name
@@ -128,7 +124,7 @@ Examples:
                          meta=meta)
     except ConversionError as exc:
         bail('declined', body=_wrap([str(exc)]),
-             action='convert by hand via the vs2-shader-expert skill', code=1)
+             action='convert it by hand, or fix the source', code=1)
 
     for item in report["baked"]:
         r.step('baked: %s' % item)
@@ -170,11 +166,11 @@ Examples:
     if args.verify:
         r.step('rendering')
         try:
-            from renderer.pipeline import run_verification
+            from .renderer.pipeline import run_verification
         except ImportError:
             r.skipped(name, 'converted, but not verified',
                       body=['the render check could not run'],
-                      action="rendering needs moderngl+numpy+Pillow; use shader-pipeline/.venv", exit_code=2)
+                      action="rendering needs moderngl+numpy+Pillow; install vs2convert[render]", exit_code=2)
             sys.exit(2)
         verification_result = run_verification(full_content, output_path.stem)
         if not verification_result["passed"]:
@@ -183,7 +179,7 @@ Examples:
             if unavailable:
                 r.skipped(name, 'converted, but not verified',
                           body=_wrap(errs),
-                          action="rendering needs moderngl+numpy+Pillow; use shader-pipeline/.venv",
+                          action="rendering needs moderngl+numpy+Pillow; install vs2convert[render]",
                           exit_code=2)
                 sys.exit(2)
             compile_fail = any('compile' in e for e in errs)

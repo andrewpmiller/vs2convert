@@ -68,15 +68,14 @@ GATES = [
         id='hlsl-milkdrop',
         trigger='frac() / lerp() / texture2D() in code (not comments)',
         reason='HLSL/bundled-texture source (MilkDrop): multi-pass merge '
-               'is not automated; convert by hand via the '
-               'vs2-shader-expert skill',
+               'is not automated; convert it by hand',
         evidence=(
             'MilkDrop HLSL is multi-pass and cannot be expressed as one VS-2 '
-            'pass. Confirmed against the skill: convert MilkDrop by hand.'
+            'pass. Convert MilkDrop by hand.'
         ),
         allows=(
             'A shader whose COMMENT mentions frac()/lerp() converts normally. '
-            'Real instance: converted_shaders/conjugoth.frag carries '
+            'Real instance: an expert reference conversion carries '
             '"// original: lerp(a, b, c)" and must not be refused.'
         ),
         module='core/generator.py',
@@ -85,8 +84,7 @@ GATES = [
         id='isf-feedback-buffer',
         trigger='ISF INPUTS entry with TARGET, or a PASSES entry with TARGET',
         reason='feedback buffer (ISF TARGET input/pass): VS-2 is '
-               'single-pass with no feedback; convert by hand via the '
-               'vs2-shader-expert skill',
+               'single-pass with no feedback; convert it by hand',
         evidence=(
             'formal-spec.md:27 ("No feedback buffers in VS-2") and :327 ("VS-2 '
             'has no feedback buffer"). Confirmed by execution: an ISF input '
@@ -132,8 +130,7 @@ GATES = [
         id='shadertoy-multi-channel',
         trigger='two or more distinct iChannelN reads in one body',
         reason='VS-2 exposes a single imageTex, so the channels cannot '
-               'be preserved. Convert by hand via the vs2-shader-expert '
-               'skill',
+               'be preserved. Convert it by hand',
         evidence=(
             'formal-spec.md:26 and :274 - iChannel0..3 map to imageTex, a '
             'SINGLE sampler. Two distinct channels have no faithful target. '
@@ -157,7 +154,7 @@ GATES = [
         id='body-feedback-refs',
         trigger='PASSINDEX together with bufferA-D / BufferA-D / feedback',
         reason='multi-pass feedback (buffer/feedback refs): VS-2 is '
-               'single-pass; convert by hand via the vs2-shader-expert skill',
+               'single-pass; convert it by hand',
         evidence=(
             'formal-spec.md:327 - "VS-2 has no feedback buffer". A distinct '
             'trigger from isf-feedback-buffer: that one reads the ISF '

@@ -508,8 +508,7 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
     if len(_channels) > 1:
         raise ConversionError(
             "reads %d distinct iChannels (iChannel%s): VS-2 exposes a single "
-            "imageTex, so the channels cannot be preserved. Convert by hand "
-            "via the vs2-shader-expert skill"
+            "imageTex, so the channels cannot be preserved. Convert by hand"
             % (len(_channels), ''.join(_channels)))
     if _channels:
         # SAFETY: a Shadertoy iChannel is a binding SLOT, not a known image.
@@ -540,8 +539,8 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
         elif _status == 'unrepresentable':
             raise ConversionError(
                 "iChannel%s is not a plain image (%s). VS-2 has a single "
-                "imageTex and cannot represent it. Convert by hand via the "
-                "vs2-shader-expert skill. Metadata said: %s"
+                "imageTex and cannot represent it; convert it by hand. "
+                "Metadata said: %s"
                 % (_slot, '; '.join(_notes) or 'unrepresentable sampler',
                    '; '.join(_notes) or '?'))
         else:
@@ -782,7 +781,7 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
             any(p.get('TARGET') for p in header_all.get('PASSES', [])):
         raise ConversionError(
             "feedback buffer (ISF TARGET input/pass): VS-2 is single-pass "
-            "with no feedback; convert by hand via the vs2-shader-expert skill")
+            "with no feedback; convert it by hand")
     # BUNDLED image resources: a top-level "IMPORTED" dict naming files the
     # composition ships with, e.g. {"blendImage": {"PATH": "Hexagon.tiff"}}.
     # Per docs.isf.video/ref_json and the canonical Test-ImportedImage.fs.
@@ -807,8 +806,7 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
                 f"bundled image resources in IMPORTED ({', '.join(_used[:4])}): "
                 f"the body samples them, and they are image files shipped with "
                 f"the .fs, so VS-2 has nowhere to put them. Supply the image in "
-                f"VS-2 instead, or convert by hand via the vs2-shader-expert "
-                f"skill")
+                f"VS-2 instead, or convert it by hand")
         report['warnings'].append(
             "IMPORTED declares %d image resource(s) that the body never "
             "samples, so they were dropped. Harmless, but check the source if "
@@ -819,7 +817,7 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
     if re.search(r'\btexture2D\s*\(|\btex2D\s*\(', source):
         raise ConversionError(
             "bundled texture input (texture2D/tex2D): hard gate; convert by "
-            "hand via the vs2-shader-expert skill")
+            "hand")
 
     body = source[m.end():] if m else source
     body = _strip_uniforms(body)
@@ -918,7 +916,7 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
         raise ConversionError(
             "declares %d distinct image inputs (%s): VS-2 binds a single "
             "image to imageTex, so they cannot all be preserved. Convert by "
-            "hand via the vs2-shader-expert skill"
+            "hand"
             % (len(_image_inputs), ', '.join(_image_inputs[:4])))
 
     if seen_image:
@@ -938,7 +936,7 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
         if re.search(r'\bbuffer[A-D]\b|\bBuffer[A-D]\b|\bfeedback\b', body):
             raise ConversionError(
                 "multi-pass feedback (buffer/feedback refs): VS-2 is "
-                "single-pass; convert by hand via the vs2-shader-expert skill")
+                "single-pass; convert it by hand")
         # project onto the FINAL pass (the composite that writes fragColor);
         # count comes from the header PASSES array, default 2. The
         # `passes = 1` that used to sit here was dead - the next line
@@ -1084,8 +1082,8 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
             r'/\s*resolution\s*\.\s*y',
             r'(texCoord - \1)', body)
 
-    # Engine aspect factor, matching the expert reference set in
-    # converted_shaders/. texCoord is NOT pre-corrected by VS-2 (author
+    # Engine aspect factor, matching the expert reference conversions.
+    # texCoord is NOT pre-corrected by VS-2 (author
     # verified 2026-09-26: an uncorrected circle renders wider than tall) and
     # the golden form scales Y: `* vec2(1.0, div)` with
     # div = resolution.y / resolution.x (author verified: renders round).
@@ -1207,7 +1205,7 @@ def convert(source: str, fmt: str, shader_name: str,
     if re.search(r'\b(frac|lerp|tex2D|texture2D)\s*\(', code_only(source)):
         raise ConversionError(
             "HLSL/bundled-texture source (MilkDrop): multi-pass merge is not "
-            "automated; convert by hand via the vs2-shader-expert skill")
+            "automated; convert it by hand")
 
     fmt_map = {
         'Shadertoy': _convert_shadertoy,

@@ -15,7 +15,6 @@ keywords = ["shader", "glsl", "vs2", "shadertoy", "isf"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Multimedia :: Graphics",
 ]

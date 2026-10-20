@@ -60,3 +60,11 @@ vs2convert SOURCE [OUTPUT] [--verify] [--dry-run] [--force]
 
 MIT. See `LICENSE`. Contributions are accepted under MIT with a DCO
 sign-off; see `CONTRIBUTING.md`.
+
+## History
+
+The converter was extracted from a private repository with `git subtree
+split`, so commits before the import refer to the old layout
+(`core/`, `renderer/`, `validators/`, `vs2_convert.py` at the repository
+root). The paths in those commits are historical; the current layout is the
+one documented above.

@@ -84,7 +84,7 @@ def detect_format(source: str) -> dict:
         errors.append(
             "reads %d distinct iChannels (iChannel%s); VS-2 exposes a single "
             "imageTex, so the channels would have to be collapsed. Convert by "
-            "hand via the vs2-shader-expert skill"
+            "hand"
             % (len(_channels_used), ''.join(_channels_used)))
     
     # Detect format

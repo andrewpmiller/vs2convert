@@ -35,7 +35,7 @@ code path that returns passed=True without having rendered and measured.
 import re
 
 # Mean absolute luminance difference (0-255) below which a multi-frame
-# render counts as frozen. Matches shader-pipeline/pipeline.py's floor.
+# render counts as frozen.
 MIN_MOTION = 1.0
 WIDTH, HEIGHT = 256, 256
 # Motion probe. A single pair of frames 1s apart is the wrong instrument for
@@ -82,7 +82,6 @@ def _adapt(source: str) -> str:
     VS-2's engine injects precision guards, `fragColor`, `texCoord`, the
     colour/alpha/resolution uniforms, and one uniform per manifest parameter.
     On the host we declare them ourselves, or the body will not compile.
-    Mirrors shader-pipeline/renderer.py:_prepend_uniforms.
     """
     lines = [
         '#version 330',
@@ -108,7 +107,6 @@ def _adapt(source: str) -> str:
 
     # Strip a UTF-8 BOM if present: it lands on the `/*` of the manifest
     # comment and the GLSL compiler rejects it with a bare syntax error.
-    # (shader-pipeline avoids this by reading with encoding='utf-8-sig'.)
     source = source.lstrip('\ufeff')
 
     # Strip the host-dictated #version and the GLES precision block.
@@ -175,18 +173,20 @@ def _load_default_texture(ctx):
     the shader takes whatever fallback branch it has.
     """
     try:
+        import importlib.resources as resources
+
         from PIL import Image
     except ImportError:
         return None
-    import os
-    for rel in ('shader-pipeline/assets/default_texture.png',
-                '../shader-pipeline/assets/default_texture.png'):
-        path = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__)))), rel)
-        if os.path.exists(path):
+    try:
+        asset = (resources.files('vs2convert.renderer')
+                 / 'assets' / 'default_texture.png')
+        with resources.as_file(asset) as path:
             img = Image.open(path).convert('RGBA')
-            return ctx.texture(img.size, 4, img.tobytes())
-    return None
+            size, data = img.size, img.tobytes()
+    except (FileNotFoundError, ModuleNotFoundError):
+        return None
+    return ctx.texture(size, 4, data)
 
 
 def _stats(arr):
@@ -210,7 +210,7 @@ def run_verification(shader_content: str, shader_name: str) -> dict:
             "passed": False,
             "errors": ["render verification unavailable: %s "
                        "(rendering needs moderngl+numpy+Pillow; "
-                       "use shader-pipeline/.venv)" % e],
+                       "install vs2convert[render])" % e],
             "metrics": {},
         }
 
