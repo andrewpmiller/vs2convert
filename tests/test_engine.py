@@ -1,21 +1,17 @@
-"""Deterministic tests for the vs2_convert conversion engine.
+"""Deterministic tests for the conversion engine.
 
-Run: python3 vs2_convert/tests/test_engine.py
+Run with the rest of the suite: python -m pytest tests/test_engine.py
 """
 import json
 import os
 import re
-import subprocess
-import sys
-import tempfile
 import unittest
 
-TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(os.path.dirname(TESTS_DIR))
-sys.path.insert(0, os.path.dirname(TESTS_DIR))
+import vs2convert
+from vs2convert.core.detector import detect_format
+from vs2convert.core.generator import convert, ConversionError
 
-from core.detector import detect_format
-from core.generator import convert, ConversionError
+PACKAGE_DIR = os.path.dirname(os.path.abspath(vs2convert.__file__))
 
 
 def _read_fixture(name):
@@ -24,8 +20,7 @@ def _read_fixture(name):
     with open(os.path.join(here, name)) as f:
         return f.read()
 
-VALIDATOR = os.path.join(REPO_ROOT, '.claude', 'skills', 'vs2-shader-expert',
-                         'scripts', 'validate_shader.py')
+
 
 SHADERTOY = """// test
 /*
@@ -102,22 +97,7 @@ void main() { gl_FragColor = texture2D(tex, gl_FragCoord.xy / 100.0); }
 """
 
 
-def validate_text(text, name='probe'):
-    with tempfile.TemporaryDirectory() as d:
-        p = os.path.join(d, f'{name}.frag')
-        with open(p, 'w') as f:
-            f.write(text)
-        r = subprocess.run([sys.executable, VALIDATOR, p],
-                           capture_output=True, text=True)
-        return r.returncode, r.stdout
-
-
 class ConvertShadertoyTests(unittest.TestCase):
-    def test_produces_valid_frag(self):
-        result = convert(SHADERTOY, 'Shadertoy', 'probe')
-        rc, out = validate_text(result['frag'])
-        self.assertEqual(rc, 0, out)
-
     def test_output_pattern_and_aliases(self):
         frag = convert(SHADERTOY, 'Shadertoy', 'probe')['frag']
         self.assertIn('coloredPixels', frag)
@@ -172,28 +152,8 @@ class SnakeCaseCollisionTests(unittest.TestCase):
         self.assertRegex(body, r'\bfoo_bar\b')
         self.assertRegex(body, r'\bfoo_bar_amt\b')
 
-    def test_external_validator_reports_no_duplicate_error(self):
-        import importlib.util
-        from pathlib import Path
-        spec = importlib.util.spec_from_file_location(
-            'validate_shader_under_test', VALIDATOR)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, 'probe.frag')
-            with open(p, 'w') as f:
-                f.write(convert(self.SRC, 'Shadertoy', 'p')['frag'])
-            errors, _warns = mod.check_file(Path(p))
-        self.assertFalse([e for e in errors if 'duplicate' in e],
-                         'external validator duplicate errors: %r' % errors)
-
 
 class ConvertIsfTests(unittest.TestCase):
-    def test_produces_valid_frag(self):
-        result = convert(ISF, 'ISF', 'probe')
-        rc, out = validate_text(result['frag'])
-        self.assertEqual(rc, 0, out)
-
     def test_knob_range_remap(self):
         frag = convert(ISF, 'ISF', 'probe')['frag']
         # Zoom default 3.0 in [1,6] -> knob 0.4, body keeps absolute range
@@ -436,7 +396,7 @@ class ShadertoyMetaTests(unittest.TestCase):
                             for w in report['warnings']))
 
     def test_meta_resolution_helper(self):
-        from core.shadertoy_meta import resolve_channels
+        from vs2convert.core.shadertoy_meta import resolve_channels
         self.assertEqual(resolve_channels(None, ['0'])[0], 'unverified')
         self.assertEqual(resolve_channels(
             {'channels': {'iChannel0': {'sampler': 'texture'}}}, ['0'])[0],
@@ -451,7 +411,7 @@ GLITCH = """float sat( float t ) { return clamp( t, 0.0, 1.0 ); }
 void mainImage( out vec4 fragColor, in vec2 fragCoord )
 {
 \tvec2 uv = fragCoord.xy / iResolution.xy;
-\t//note: /\ t=[0;0.5;1], y=[0;1;0]   <-- a bare 'y' inside a COMMENT
+\t//note: /\\ t=[0;0.5;1], y=[0;1;0]   <-- a bare 'y' inside a COMMENT
 \tfloat time = mod(iTime*100.0, 32.0)/110.0;
 \tfloat GLITCH = 0.1 + iMouse.x / iResolution.x;
 \tfloat r0 = sat(GLITCH);
@@ -759,7 +719,7 @@ void main() {
 class IsfImageInputTests(unittest.TestCase):
     """Multiple distinct ISF image inputs cannot be represented.
 
-    Found 2026-09-25 by running the GLSLOP collection: developer-k0rz1pe2.fs
+    Found 2026-09-25 running a real multi-image ISF source, which
     declares six image inputs (src0..src5) and passes each to a different
     call. The converter collapsed them all onto imageTex, leaving the body
     referencing samplers that were never declared - GLSL that does not
@@ -787,40 +747,6 @@ class IsfImageInputTests(unittest.TestCase):
                  convert(SINGLE_IMAGE_ISF, 'ISF', 'p')['params']]
         self.assertNotIn('src0', names)
 
-
-
-_SKIP_DIRS = {'.git', '__pycache__', 'converted_shaders', 'factory-examples',
-              'factory-references', 'shader-pipeline', 'node_modules',
-              'shaders-to-convert',
-              'tests', 'templates', 'core', 'validators', 'renderer'}
-
-
-def _collections():
-    """Every directory that directly holds .fs sources.
-
-    The other helpers in this suite use a ">=3 files" threshold to decide
-    what counts as a COLLECTION. That is right for test_isf_collections,
-    which asks "which directories are collections", but wrong here: it left
-    ISF-shaders-main out entirely, because that tree stores ONE .fs per
-    subdirectory (41 dirs, 1 file each). The corpus check was silently
-    running over 7 files instead of all of them.
-
-    So: any directory with at least one .fs, plus its ancestors up to the
-    repo root, so corpus_scan.sources() can walk each one.
-    """
-    found = set()
-    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
-        dirnames[:] = [d for d in dirnames
-                       if not d.startswith('.') and d not in _SKIP_DIRS]
-        if any(f.lower().endswith('.fs') for f in filenames):
-            d = dirpath
-            while d.startswith(REPO_ROOT):
-                found.add(d)
-                parent = os.path.dirname(d)
-                if parent == d:
-                    break
-                d = parent
-    return sorted(found)
 
 
 class ISFFragCoordTests(unittest.TestCase):
@@ -898,35 +824,6 @@ class ISFFragCoordTests(unittest.TestCase):
             'already 0..1 - mapping it to gl_FragCoord produced a black '
             'screen in VS-2')
 
-    def test_whole_corpus_output_is_fragcoord_free(self):
-        """Structural check across every ISF source in the corpus.
-
-        The unit tests above pin individual shapes; this catches a shape
-        nobody thought to enumerate, which is how the phreax hexflower
-        scalar-swizzle case survived the first fix."""
-        import corpus_scan
-        checked = 0
-        for coll in _collections():
-            for path in corpus_scan.sources(coll):
-                if not path.lower().endswith('.fs'):
-                    continue
-                try:
-                    with open(path, encoding='utf-8-sig',
-                              errors='replace') as fh:
-                        src = fh.read()
-                except OSError:
-                    continue
-                try:
-                    frag = convert(src, 'ISF', 'p')['frag']
-                except Exception:
-                    continue  # declined, not converted
-                checked += 1
-                self.assertNotIn(
-                    'gl_FragCoord', frag,
-                    'corpus source %s emits gl_FragCoord' % path)
-        self.assertGreater(checked, 0, 'no ISF sources were checked')
-
-
 class SingleDefinitionTests(unittest.TestCase):
     """Each converter entry point must be defined exactly once.
 
@@ -948,7 +845,7 @@ class SingleDefinitionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        with open(os.path.join(REPO_ROOT, 'vs2_convert', 'core',
+        with open(os.path.join(PACKAGE_DIR, 'core',
                                'generator.py')) as fh:
             cls.src = fh.read()
 

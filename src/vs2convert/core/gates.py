@@ -71,7 +71,9 @@ GATES = [
                'is not automated; convert it by hand',
         evidence=(
             'MilkDrop HLSL is multi-pass and cannot be expressed as one VS-2 '
-            'pass. Convert MilkDrop by hand.'
+            'pass (formal-spec.md:327 - VS-2 has no feedback buffer and '
+            'renders one pass per layer). Confirmed: a preset body using '
+            'frac()/lerp() is refused by this gate.'
         ),
         allows=(
             'A shader whose COMMENT mentions frac()/lerp() converts normally. '
@@ -247,18 +249,23 @@ GATES = [
     ),
     Gate(
         id='too-many-parameters',
-        trigger='more than 7 parameters declared by the source manifest',
+        trigger='more than 7 parameters in a Shadertoy-style "parameters" '
+                'block, or more than 7 uniform declarations',
         reason='Too many parameters: %d (max 7)',
         evidence=(
             'VS-2 manifests carry at most 7 parameters, and the converter '
             'truncates the emitted manifest to MAX_PARAMS (generator.py:26). '
-            'Measured: an ISF declaring 9 INPUTS is declined by '
-            'check_suitability before conversion.'
+            'Measured: a Shadertoy source declaring 9 parameters is declined '
+            'by check_suitability before conversion. NOTE: detector.'
+            '_extract_parameters reads "parameters" blocks and uniform '
+            'declarations, NOT ISF INPUTS - measured, a 9-INPUT ISF converts '
+            'with 7 knobs and the surplus is baked to its DEFAULT. That is a '
+            'known gap, not this gate firing.'
         ),
         allows=(
             'Exactly 7 parameters converts; the manifest is complete. The '
-            'generator still bakes surplus Shadertoy params to their defaults '
-            'when --force overrides this gate.'
+            'generator still bakes surplus params to their defaults when '
+            '--force overrides this gate.'
         ),
         module='core/detector.py',
     ),

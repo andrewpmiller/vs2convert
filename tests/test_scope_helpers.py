@@ -6,15 +6,9 @@ per-file number hid that. They are also the machinery behind engine-variable
 shadow renaming, so a bug here silently produces a shader that compiles and
 misbehaves.
 """
-import os
-import sys
 import unittest
 
-TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-VS2_DIR = os.path.dirname(TESTS_DIR)
-sys.path.insert(0, VS2_DIR)
-
-from core.generator import _enclosing_block, _replace_scoped  # noqa: E402
+from vs2convert.core.generator import _enclosing_block, _replace_scoped
 
 
 class EnclosingBlockTests(unittest.TestCase):

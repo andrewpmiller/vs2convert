@@ -25,7 +25,7 @@ Usage
 -----
     from safe_edit import edit, EditError, replace_once, insert_before
 
-    edit('vs2_convert/core/generator.py', old, new, expect=1)
+    edit('src/vs2convert/core/generator.py', old, new, expect=1)
     edit(path, old, new, expect=1, must_parse=False)   # for .frag/.txt
 
 Deliberately not offered:

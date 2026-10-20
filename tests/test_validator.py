@@ -1,4 +1,4 @@
-"""Deterministic tests for vs2_convert/validators/validator.py.
+"""Deterministic tests for vs2convert/validators/validator.py.
 
 These exist because two agent-flagged "Critical" findings were adjudicated as
 false positives by hand. Hand adjudication is not a safeguard - it is exactly
@@ -6,31 +6,22 @@ the kind of claim that failed review. Each adjudication is pinned here as an
 executable assertion instead, so a change that reintroduces the reviewed-for
 regression fails the suite rather than passing on my say-so.
 
-Run: python3 vs2_convert/tests/test_validator.py
+Run: pytest tests/test_validator.py
 """
-import glob
 import os
-import subprocess
-import sys
-import tempfile
+import re
 import unittest
 
-TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-VS2_DIR = os.path.dirname(TESTS_DIR)
-REPO_ROOT = os.path.dirname(VS2_DIR)
-sys.path.insert(0, VS2_DIR)
-
-from core.detector import check_suitability
-from validators.validator import (
+import vs2convert
+from vs2convert.core.detector import check_suitability
+from vs2convert.validators.validator import (
     run_validation,
     _has_uniform_declarations,
     _has_engine_var_redecl,
     _has_custom_speed_params,
 )
 
-# Ground truth corpus: every shader VS-2 has actually shipped.
-CORPUS = sorted(glob.glob(os.path.join(REPO_ROOT, 'converted_shaders', '*.frag'))
-                + glob.glob(os.path.join(REPO_ROOT, 'factory-examples', '*.frag')))
+PACKAGE_DIR = os.path.dirname(os.path.abspath(vs2convert.__file__))
 
 MINIMAL_VALID = '\n'.join([
     '/*{"parameters": [{"name": "level", "default": 0.5}]}*/',
@@ -58,10 +49,9 @@ class UniformRuleAdjudicationTests(unittest.TestCase):
     A review claimed this rule was a bug that "rejects valid code", on the
     grounds that PRD hard rule 5 only forbids redeclaring the 7 engine vars.
     That claim was false. VS-2 injects its own uniforms and varyings; ANY
-    declaration in the body shadows engine state. The authoritative external
-    validator (validate_shader.py:125) makes any uniform/varying an error.
-    Ground truth: 0 uniform/varying declarations across every shipped shader
-    (asserted in CorpusParityTests below).
+    declaration in the body shadows engine state. Ground truth: 0
+    uniform/varying declarations across every shipped shader (checked by the
+    private oracle, which keeps the corpus).
 
     These tests exist so that "relax the rule to allow custom uniforms" cannot
     land silently. It would be a real regression, not a fix.
@@ -87,18 +77,6 @@ class UniformRuleAdjudicationTests(unittest.TestCase):
     def test_clean_shader_has_no_uniform_declarations(self):
         self.assertFalse(_has_uniform_declarations(MINIMAL_VALID))
 
-    def test_external_validator_bans_these_too(self):
-        """Parity with the authoritative gate. If the external validator ever
-        relaxes this, this test fails and the question is reopened
-        deliberately rather than by a confident review."""
-        validator = os.path.join(REPO_ROOT, '.claude', 'skills',
-                                 'vs2-shader-expert', 'scripts',
-                                 'validate_shader.py')
-        src = _read(validator)
-        self.assertIn('uniform', src)
-        self.assertIn('varying', src)
-        self.assertIn('engine injects', src)
-
 
 class EngineVarRedeclTests(unittest.TestCase):
     def test_engine_var_redecl_caught(self):
@@ -112,12 +90,10 @@ class EngineVarRedeclTests(unittest.TestCase):
 class SpeedKeywordParityTests(unittest.TestCase):
     """ADJUDICATION: the validator's keyword list must cover the generator's.
 
-    A review found validator.py:104 missing 'twist_speed'. The validator is
+    A review found validator.py missing 'twist_speed'. The validator is
     defense-in-depth: it exists to catch what the conversion path missed, so
     a NARROWER list defeats the purpose. The live counterpart list is the
-    generator's SPEED_KEYWORDS (core/generator.py); the dead mapper module
-    it used to compare against was deleted in the audit-8 cleanup. Pinned so
-    the two lists cannot silently drift apart again.
+    generator's SPEED_KEYWORDS. Pinned so the two cannot silently drift.
     """
 
     def test_validator_catches_each_speed_keyword(self):
@@ -141,14 +117,13 @@ class SpeedKeywordParityTests(unittest.TestCase):
         High-severity defense-in-depth gap. It is defensive bookkeeping, not
         a behavioural defect.)
         """
-        import re as _re
-        from core.generator import SPEED_KEYWORDS
-        val_src = _read(os.path.join(VS2_DIR, 'validators', 'validator.py'))
+        from vs2convert.core.generator import SPEED_KEYWORDS
+        val_src = _read(os.path.join(PACKAGE_DIR, 'validators', 'validator.py'))
 
         def _list_from(src, varname):
-            m = _re.search(varname + r"\s*=\s*\[(.*?)\]", src, _re.DOTALL)
+            m = re.search(varname + r"\s*=\s*\[(.*?)\]", src, re.DOTALL)
             self.assertIsNotNone(m, "could not find %s" % varname)
-            return set(_re.findall(r"'([^']+)'", m.group(1)))
+            return set(re.findall(r"'([^']+)'", m.group(1)))
 
         val_kws = _list_from(val_src, 'speed_patterns')
         gen_kws = set(SPEED_KEYWORDS)
@@ -163,33 +138,6 @@ class SpeedKeywordParityTests(unittest.TestCase):
         noisy = ('// this shader moves at high speed\n'
                  '/*{"parameters": [{"name": "level", "default": 0.5}]}*/\n')
         self.assertFalse(_has_custom_speed_params(noisy))
-
-
-class CorpusParityTests(unittest.TestCase):
-    """Ground truth: the shipped corpus must produce zero uniform/varying
-    errors. This is the executable version of the 'no shipped shader declares
-    uniforms' evidence - it re-derives the fact on every run rather than
-    trusting a one-off grep quoted in a review."""
-
-    def test_corpus_is_non_trivial(self):
-        self.assertGreaterEqual(len(CORPUS), 50,
-                                'corpus unexpectedly small - parity checks '
-                                'would be vacuous')
-
-    def test_corpus_has_zero_uniform_declarations(self):
-        offenders = [f for f in CORPUS
-                     if _has_uniform_declarations(_read(f))]
-        self.assertEqual(offenders, [],
-                         'shipped shaders must not declare uniform/varying')
-
-    def test_corpus_produces_no_uniform_errors(self):
-        bad = []
-        for f in CORPUS:
-            result = run_validation(_read(f), f)
-            for e in result['errors']:
-                if 'uniform' in e.lower() or 'varying' in e.lower():
-                    bad.append((f, e))
-        self.assertEqual(bad, [], 'uniform/varying false positives on corpus')
 
 
 class SanityTests(unittest.TestCase):
@@ -211,12 +159,7 @@ class SuitabilityGateTests(unittest.TestCase):
 
     The detector computed `suitable` but the CLI ignored it and converted
     anyway. A shader redeclaring `resolution` was emitted as a .frag that
-    shadows the engine's uniform -- the external validator flags it, but only
-    if you passed --validate. These tests pin the decline reasons.
-
-    Image-input scope note: these assert only THAT a shader takes an image
-    and is declined. They deliberately say nothing about how VS-2's image
-    input works; that is an open question being revisited separately.
+    shadows the engine's uniform. These tests pin the decline reasons.
     """
 
     def test_clean_shader_is_suitable(self):
@@ -234,10 +177,8 @@ class SuitabilityGateTests(unittest.TestCase):
         An earlier revision declined these as "image-input, not understood".
         That was wrong: VS-2 binds the layer's configured image to imageTex,
         ignores a configured image for shaders that do not sample it, and
-        previews these shaders in the gallery against a default image. The
-        refusal was a gap in our own headless harness (no texture bound), not
-        a property of the shader. Do not re-add a blanket decline without a
-        named failing shader.
+        previews these shaders in the gallery against a default image. Do not
+        re-add a blanket decline without a named failing shader.
         """
         r = check_suitability('void main(){ fragColor = texture(imageTex, texCoord); }')
         self.assertTrue(r['suitable'],
@@ -270,11 +211,9 @@ class SuitabilityGateTests(unittest.TestCase):
         """A comment documenting the shader's origin must not be read as
         unconverted HLSL.
 
-        Found by the mutation harness: `detector: check HLSL in comments too`
-        survived because nothing pinned this. The real instance is
-        converted_shaders/conjugoth.frag line 289, which carries
-        "// ... (original: lerp(blur1+blur3, ret, ret))" and is a valid
-        shader that the MVP gate must not decline.
+        The real instance is a shipped reference conversion carrying
+        "// ... (original: lerp(blur1+blur3, ret, ret))", which is a valid
+        shader that the gate must not decline.
         """
         src = ('/*{"parameters": [{"name": "level", "default": 0.5}]}*/\n'
                '// Blurred blend (original: lerp(a, b, c))\n'
@@ -310,59 +249,6 @@ class SuitabilityGateTests(unittest.TestCase):
             r = check_suitability(src)
             self.assertEqual(r['suitable'], len(r['errors']) == 0,
                              'suitable/errors disagree for: %r' % src[:40])
-
-
-class PerfBudgetTests(unittest.TestCase):
-    """ADJUDICATION: the loop-budget warning is a gate, so it needs a control.
-
-    Found by the gate audit (tests/test_gate_audit.py). WARN never fails the
-    validator's exit code and NOTHING asserted this warning, so raising the
-    threshold from 100 to 300 changed no observable behaviour anywhere in the
-    suite. A warning no test can see is not a gate.
-
-    The two real instances it guards today are converted_shaders/
-    pathogen_path.frag (130) and spiral_riders_kali.frag (150), the only two
-    shipped files the validator warns about.
-    """
-
-    OVER_BUDGET = '\n'.join([
-        '/*{"parameters": [{"name": "level", "default": 0.5}]}*/',
-        'void main() {',
-        '    vec3 acc = vec3(0.0);',
-        '    for (int i = 0; i < 200; i++) {',
-        '        acc += vec3(float(i) * 0.001);',
-        '    }',
-        '    vec3 c = acc * color.rgb * level;',
-        '    float coloredPixels = dot(clamp(c, 0.0, 1.0), vec3(1.0));',
-        '    fragColor = vec4(c, alpha * coloredPixels);',
-        '}',
-    ])
-
-    def _validator_output(self, body):
-        validator = os.path.join(REPO_ROOT, '.claude', 'skills',
-                                 'vs2-shader-expert', 'scripts',
-                                 'validate_shader.py')
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'over-budget.frag')
-            with open(path, 'w') as fh:
-                fh.write(body)
-            proc = subprocess.run([sys.executable, validator, path],
-                                  capture_output=True, text=True)
-        return proc.stdout + proc.stderr
-
-    def test_loop_over_the_budget_warns(self):
-        out = self._validator_output(self.OVER_BUDGET)
-        self.assertIn(
-            'loop bound 200 > 100', out,
-            'the perf-budget warning did not fire for a 200-iteration loop: %s'
-            % out[-300:])
-
-    def test_loop_under_the_budget_does_not_warn(self):
-        """Counterpart, so a check that warns on every loop cannot pass."""
-        out = self._validator_output(self.OVER_BUDGET.replace('< 200', '< 50'))
-        self.assertNotIn('loop bound', out,
-                         'a 50-iteration loop was reported over budget: %s'
-                         % out[-300:])
 
 
 if __name__ == '__main__':

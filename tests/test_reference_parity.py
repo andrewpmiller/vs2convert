@@ -1,41 +1,30 @@
-"""Compare our conversions against the expert conversions in
-converted_shaders/ - the reference outcomes that already exist in the repo.
+"""The three curated ISF <-> expert-conversion pairs kept from the upstream
+oracle, plus the inline aspect-convention test.
 
-Seventeen converted_shaders/*.frag have a matching ISF source. Those are the
-only real oracle available for "does our output look like the output a
-careful human produced", and until now nothing in the suite consulted them.
+`converted_shaders/` held 17 pairs; the private suite compared all of them.
+Only three travel with this repo: the rest are private-corpus material with
+no place in a public package. The three here are the smallest sources that
+still exercise the convention the expert set established:
 
-Two independent reasons this exists, both learned the hard way:
+  * every expert conversion corrects aspect (`resolution.y / resolution.x`),
+    including shaders whose ISF source does not;
+  * ISF float inputs become 0..1 knobs that round-trip the source DEFAULT.
 
-  1. The expert set injects the aspect pattern into every one of the seventeen,
-     including shaders whose ISF source has no aspect correction at all. The
-     expert comment says why: "engine convention (div = y/x); matches source
-     framing on square canvases". That is a deliberate departure from source
-     fidelity, chosen because it is correct in the engine. An earlier
-     "stay faithful to the source" decision contradicted it 17 times out of
-     18, and the contradiction was visible in this directory the whole time.
-
-  2. Where the expert set is internally inconsistent - one uses the
-     transposed axis, three differ structurally - this test does NOT copy a
-     style. It compares outcomes and reports disagreement, so a genuine
-     difference is visible rather than averaged away.
-
-Reference: the author verified in VS-2 on 2026-09-25/26 that texCoord is not
-pre-corrected by the engine (an uncorrected circle renders wider than tall)
-and that the golden pattern scales Y (vec2(1.0, div), which renders round).
+Provenance: the `.fs` sources are from ISF-shaders-main (CC0 per its LICENSE
+file; its README asks for non-commercial reuse - recorded, not resolved), the
+`.frag` files are this project's converted output. Fixtures only.
 """
 import json
 import os
 import re
-import sys
 import unittest
 
-TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-VS2_DIR = os.path.dirname(TESTS_DIR)
-REPO_ROOT = os.path.dirname(VS2_DIR)
-sys.path.insert(0, VS2_DIR)
+from vs2convert.api import convert
 
-from core.generator import convert  # noqa: E402
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'fixtures', 'reference')
+
+PAIRS = ['julia', 'waves', 'polyhedral']
 
 ASPECT = 'resolution.y / resolution.x'
 
@@ -48,56 +37,25 @@ ASPECT = 'resolution.y / resolution.x'
 _ASPECT_RE = re.compile(
     r'resolution\.(?:x|y|xy)\s*/\s*resolution\.(?:x|y|xy)')
 
-# (expert .frag stem, path of the ISF source under ISF-shaders-main)
-REFERENCE_PAIRS = [
-    ('bloom', 'bloom/bloom.fs'),
-    ('bulb_volumetrics', 'bulb volumetrics/bulb volumetrics.fs'),
-    ('color_fractal_nayk', 'color fractal nayk/color fractal nayk.fs'),
-    ('drostled', 'drostled/drostled.fs'),
-    ('fork_of_4th_eye', 'Fork of 4th eye/Fork of 4th eye.fs'),
-    ('iq_line_fractal_tunnel',
-     'iq - line fractal tunnel/iq - line fractal tunnel.fs'),
-    ('julia', 'julia/julia.fs'),
-    ('kabbalistic_fractal_circles',
-     'kabbalistic fractal circles/kabbalistic fractal circles.fs'),
-    ('kali_inversion_machine',
-     'kali inversion machine/kali inversion machine.fs'),
-    ('nayk_spherical_remake', 'nayk spherical remake/nayk spherical remake.fs'),
-    ('neon_psy', 'Neon psy/Neon psy.fs'),
-    ('phreax_portal', 'phreax portal/phreax portal.fs'),
-    ('polyhedral', 'polyhedral/polyhedral.fs'),
-    ('rotating_circles', 'Rotating circles/Rotating circles.fs'),
-    ('spiral_riders_kali', 'spiral riders kali/spiral riders kali.fs'),
-    ('waves', 'waves (1)/waves.fs'),
-    ('xor_ascend', 'xor ascend/xor ascend.fs'),
-]
-
-# Known, documented divergence - NOT a rule this test fails to encode.
-# xor_ascend builds a 3D RAY, not a uv:
-#     source  normalize(vec3(2.1 * gl_FragCoord.xy, 0.0) - RENDERSIZE.xyy)
-#     expert  normalize(vec3(2.1 * fragPx, 0.0)
-#                      - vec3(resolution.y / div, resolution.y, resolution.y))
-# The expert rewrote the ray construction by hand ("frag == texCoord *
-# resolution in the engine"). No mechanical aspect rule reproduces that, and
-# inventing one would be a guess. Converted by hand instead.
-KNOWN_HAND_CONVERTED = {'xor_ascend'}
-
 
 def _has_aspect(text):
     return bool(_ASPECT_RE.search(text))
 
 
-def _load(relative):
-    path = os.path.join(REPO_ROOT, relative)
+def _read(name):
+    path = os.path.join(FIXTURES, name)
     if not os.path.exists(path):
-        raise unittest.SkipTest('missing fixture: %s' % relative)
+        raise unittest.SkipTest('missing fixture: %s' % name)
     with open(path, encoding='utf-8-sig', errors='replace') as fh:
         return fh.read()
 
 
-def _convert(relative):
-    src = _load(os.path.join('ISF-shaders-main', relative))
-    return convert(src, 'ISF', 'ref')['frag']
+def _convert(stem):
+    result = convert(_read(stem + '.fs'), name='ref')
+    if not result.ok:
+        raise AssertionError('%s declined: %r'
+                             % (stem, result.rejections))
+    return result.frag
 
 
 class ExpertReferenceParityTests(unittest.TestCase):
@@ -105,50 +63,35 @@ class ExpertReferenceParityTests(unittest.TestCase):
 
     def test_reference_pairs_all_exist(self):
         """Guards the comparison itself: a missing fixture would make the
-        rest of this class vacuous, which is exactly how a test starts
-        passing while checking nothing."""
+        rest of this class vacuous."""
         missing = []
-        for stem, rel in REFERENCE_PAIRS:
-            for path in (os.path.join(REPO_ROOT, 'converted_shaders',
-                                      stem + '.frag'),
-                         os.path.join(REPO_ROOT, 'ISF-shaders-main', rel)):
+        for stem in PAIRS:
+            for ext in ('.fs', '.frag'):
+                path = os.path.join(FIXTURES, stem + ext)
                 if not os.path.exists(path):
                     missing.append(path)
-        self.assertEqual([], missing,
-                         'reference fixtures missing: %s' % missing[:3])
-        self.assertGreaterEqual(len(REFERENCE_PAIRS), 15)
+        self.assertEqual([], missing, 'reference fixtures missing: %s'
+                         % missing[:3])
 
     def test_every_expert_reference_corrects_aspect(self):
         """Sanity-check the premise. If the expert set stopped correcting
         aspect, this fails loudly instead of the parity test below silently
         demanding a change nobody wants."""
-        without = [s for s, _ in REFERENCE_PAIRS
-                   if not _has_aspect(_load(
-                       'converted_shaders/%s.frag' % s))]
+        without = [s for s in PAIRS
+                   if not _has_aspect(_read(s + '.frag'))]
         self.assertEqual(
             [], without,
             'expert conversions that no longer correct aspect: %s' % without)
 
     def test_our_output_corrects_aspect_like_the_expert_set(self):
-        disagree = []
-        for stem, rel in REFERENCE_PAIRS:
-            if stem in KNOWN_HAND_CONVERTED:
-                continue
-            expert = _load('converted_shaders/%s.frag' % stem)
-            try:
-                ours = _convert(rel)
-            except Exception as exc:                 # declined
-                disagree.append('%s: declined (%s)' % (stem, exc))
-                continue
-            if _has_aspect(expert) != _has_aspect(ours):
-                disagree.append(
-                    '%s: expert corrects aspect=%s, ours=%s'
-                    % (stem, _has_aspect(expert), _has_aspect(ours)))
-        self.assertEqual(
-            [], disagree,
-            'aspect treatment disagrees with the expert reference set in '
-            '%d of %d cases:\n  %s'
-            % (len(disagree), len(REFERENCE_PAIRS), '\n  '.join(disagree)))
+        for stem in PAIRS:
+            with self.subTest(stem=stem):
+                expert = _read(stem + '.frag')
+                ours = _convert(stem)
+                self.assertEqual(_has_aspect(expert), _has_aspect(ours),
+                                 '%s: expert corrects aspect=%s, ours=%s'
+                                 % (stem, _has_aspect(expert),
+                                    _has_aspect(ours)))
 
     def test_isf_uv_normalised_by_rendersize_y_gets_the_aspect_factor(self):
         """The specific source shape behind most of the 17.
@@ -175,7 +118,9 @@ class ExpertReferenceParityTests(unittest.TestCase):
                        '    vec2 uv = %s;\n'
                        '    float v = uv.x;\n'
                        '    gl_FragColor = vec4(v, v, v, 1.0);\n}\n' % raw)
-                frag = convert(src, 'ISF', 'p')['frag']
+                result = convert(src, name='p')
+                self.assertTrue(result.ok, result.rejections)
+                frag = result.frag
                 self.assertTrue(
                     _has_aspect(frag),
                     'no aspect factor emitted for %r\n%s' % (raw, frag))
@@ -184,14 +129,13 @@ class ExpertReferenceParityTests(unittest.TestCase):
                 self.assertIn('vec2(1.0, div)', frag,
                               'the expert form scales Y: vec2(1.0, div)')
 
-
     def test_expert_reference_parameters_are_valid_knob_ranges(self):
-        """Hard rule 1 & formal spec: All parameters in converted_shaders/*.frag
-        must have valid in-range knob defaults (0.0 <= default <= 1.0).
+        """Hard rule 1 & formal spec: all parameters in the expert .frag
+        files must have valid in-range knob defaults (0.0 <= default <= 1.0).
         """
         out_of_range = []
-        for stem, _ in REFERENCE_PAIRS:
-            expert = _load('converted_shaders/%s.frag' % stem)
+        for stem in PAIRS:
+            expert = _read(stem + '.frag')
             m = re.search(r'/\*(.*?)\*/', expert, re.DOTALL)
             if not m:
                 continue
@@ -206,7 +150,7 @@ class ExpertReferenceParityTests(unittest.TestCase):
             % out_of_range)
 
     def test_our_converted_knobs_round_trip_source_defaults(self):
-        """Magnitude-fidelity across the reference corpus.
+        """Magnitude fidelity across the curated corpus.
 
         When a source ISF float input declares DEFAULT over [MIN, MAX],
         evaluating the converted shader formula:
@@ -217,8 +161,8 @@ class ExpertReferenceParityTests(unittest.TestCase):
             r'\(\s*([-\d.eE+]+)\s*\+\s*(\w+)\s*\*\s*\(([-\d.eE+]+)\s*-\s*([-\d.eE+]+)\)\s*\)')
         checked = 0
         drifts = []
-        for stem, rel in REFERENCE_PAIRS:
-            isf_src = _load(os.path.join('ISF-shaders-main', rel))
+        for stem in PAIRS:
+            isf_src = _read(stem + '.fs')
             header = ''
             if '/*{' in isf_src:
                 header = isf_src[isf_src.find('/*{')+2 : isf_src.find('}*/')+1]
@@ -231,18 +175,16 @@ class ExpertReferenceParityTests(unittest.TestCase):
 
             src_inputs = {inp['NAME']: inp for inp in inputs
                           if 'NAME' in inp and inp.get('TYPE') == 'float'}
-            try:
-                ours = _convert(rel)
-            except Exception:
-                continue
+            ours = _convert(stem)
 
             m = re.search(r'/\*(.*?)\*/', ours, re.DOTALL)
             if not m:
                 continue
             manifest = json.loads(m.group(1))
-            knobs = {p['name']: p['default'] for p in manifest.get('parameters', [])}
+            knobs = {p['name']: p['default']
+                     for p in manifest.get('parameters', [])}
 
-            for lo_s, name, hi_s, lo2_s in roundtrip_pat.findall(ours):
+            for lo_s, name, hi_s, _ in roundtrip_pat.findall(ours):
                 if name in knobs:
                     lo, hi = float(lo_s), float(hi_s)
                     knob = knobs[name]
@@ -255,12 +197,14 @@ class ExpertReferenceParityTests(unittest.TestCase):
                             src_def = float(inp['DEFAULT'])
                             diff = abs(restored - src_def)
                             if diff > 0.001:
-                                drifts.append((stem, name, restored, src_def, diff))
+                                drifts.append((stem, name, restored,
+                                               src_def, diff))
                             checked += 1
                             break
 
-        self.assertGreater(checked, 20, 'no roundtrips checked across reference corpus')
-        self.assertEqual([], drifts, 'source default magnitude drifts: %s' % drifts)
+        self.assertGreater(checked, 0, 'no roundtrips checked')
+        self.assertEqual([], drifts,
+                         'source default magnitude drifts: %s' % drifts)
 
 
 if __name__ == '__main__':

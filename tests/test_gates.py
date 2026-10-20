@@ -14,23 +14,26 @@ one, mechanically:
   - every gate must declare the near-miss it still ALLOWS
   - every gate's `allows` case must actually be allowed, verified by running
     the converter, so a gate cannot quietly widen into a blanket refusal
-  - the registry must not drift from the code: every ConversionError raised
-    by the generator must be accounted for by some gate
+  - the registry must not drift from the code: every gate id the generator
+    raises must be registered, and every registered gate must be raised
+    somewhere (or be a disclosure, listed below)
 
-Run: python3 vs2_convert/tests/test_gates.py
+Run: pytest tests/test_gates.py
 """
 import os
 import re
-import sys
 import unittest
 
-TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-VS2_DIR = os.path.dirname(TESTS_DIR)
-sys.path.insert(0, VS2_DIR)
+from vs2convert.core.gates import GATES, allows_missing, evidence_missing
+from vs2convert.core.generator import convert, ConversionError
+from vs2convert.core.detector import check_suitability
 
-from core.gates import GATES, allows_missing, evidence_missing, gates_for
-from core.generator import convert, ConversionError
-from core.detector import check_suitability
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__import__(
+    'vs2convert').__file__))
+
+# Gates that are disclosures rather than refusals: they never raise, so no
+# `gate=` site exists. Their positive control proves the disclosure fires.
+DISCLOSURES = {'shadertoy-channel-uncertainty'}
 
 # --- positive controls: each gate's declared `allows` case, run for real ----
 
@@ -102,7 +105,59 @@ ALLOWED_CASES = {
     # a custom uniform is not an engine var
     'engine-var-redeclaration': lambda: check_suitability(
         'uniform float myParam;\n' + MINIMAL_BODY)['suitable'],
+    # exactly seven parameters is inside the budget
+    'too-many-parameters': lambda: check_suitability(
+        ''.join('uniform float p%d;\n' % i for i in range(7))
+        + MINIMAL_BODY)['suitable'],
+    # a source with a real entry point converts
+    'missing-entry-point': lambda: _converts(MINIMAL_BODY),
+    # a well-formed ISF manifest parses
+    'isf-parse-failure': lambda: _converts(
+        '/*{"INPUTS": [{"NAME": "z", "TYPE": "float", "DEFAULT": 0.5}]}*/\n'
+        'void main() {\n'
+        '    vec2 uv = gl_FragCoord.xy / RENDERSIZE.xy;\n'
+        '    gl_FragColor = vec4(uv * z, 1.0);\n}\n', 'ISF'),
+    # every format detection can name has a body converter
+    'unsupported-format': lambda: _all_formats_convert(),
+    # a malformed manifest is refused as data, not raised
+    'internal-error': lambda: _never_raises('/*{"INPUTS": "nope"}*/\n'),
 }
+
+
+def _all_formats_convert():
+    """PlainGLSL, Shadertoy, ISF and GLSLSandbox each reach a converter.
+
+    MilkDrop is deliberately absent: detect_format may name it, but the HLSL
+    gate refuses it first, so it never reaches the dispatch table.
+    """
+    from vs2convert.core.generator import convert as gen_convert
+    sample = MINIMAL_BODY
+    for fmt in ('PlainGLSL', 'Shadertoy', 'GLSLSandbox'):
+        gen_convert(sample, fmt, 'probe')
+    gen_convert(
+        '/*{"INPUTS": [{"NAME": "z", "TYPE": "float", "DEFAULT": 0.5}]}*/\n'
+        'void main() {\n'
+        '    vec2 uv = gl_FragCoord.xy / RENDERSIZE.xy;\n'
+        '    gl_FragColor = vec4(uv * z, 1.0);\n}\n', 'ISF', 'probe')
+    return True
+
+
+def _never_raises(source):
+    from vs2convert.api import convert as api_convert
+    try:
+        result = api_convert(source)
+    except Exception:
+        return False
+    return result.rejections and all(r.gate for r in result.rejections)
+
+
+def _structural_validation_allows():
+    """A clean conversion passes: the validator is a real gate, not a blanket."""
+    from vs2convert.api import convert as api_convert
+    return api_convert(MINIMAL_BODY).ok
+
+
+ALLOWED_CASES['structural-validation'] = _structural_validation_allows
 
 
 def _raises_on(source, fmt):
@@ -134,7 +189,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_every_gate_names_a_real_module(self):
         for g in GATES:
-            path = os.path.join(VS2_DIR, g.module)
+            path = os.path.join(PACKAGE_DIR, g.module)
             self.assertTrue(os.path.exists(path),
                             'gate %s names missing module %s' % (g.id, g.module))
 
@@ -170,79 +225,41 @@ class AllowsPositiveControlTests(unittest.TestCase):
 class RegistryMatchesCodeTests(unittest.TestCase):
     """The registry must not drift from the code it describes."""
 
-    def test_every_conversion_error_is_accounted_for(self):
-        """Every refusal the generator can make must be traceable to a gate.
+    def _source(self, name):
+        with open(os.path.join(PACKAGE_DIR, name), encoding='utf-8') as fh:
+            return fh.read()
 
-        Keeps the registry honest in both directions: a new hard gate cannot
-        be added without documenting it, and a documented gate cannot be
-        quietly deleted.
-        """
-        src = open(os.path.join(VS2_DIR, 'core', 'generator.py')).read()
-        # Messages that are pure input-format complaints rather than
-        # capability limits; these need no gate entry.
-        FORMAT_COMPLAINTS = (
-            'no mainImage() or main() entry point found',
-            'no main() entry point found',
-            'ISF INPUTS block not found or not parseable',
-            'unsupported format:',
-        )
-        blocks = re.findall(r'raise ConversionError\(\s*(.*?)\)\n', src,
+    def test_every_conversion_error_names_a_registered_gate(self):
+        """A raise site without a gate id is a decline the API cannot label."""
+        src = self._source('core/generator.py')
+        blocks = re.findall(r'raise ConversionError\((.*?)\)\n', src,
                             re.DOTALL)
-        undocumented = []
+        self.assertTrue(blocks, 'no raise sites found - did the pattern rot?')
+        ids = {g.id for g in GATES}
+        missing = []
         for block in blocks:
-            text = ' '.join(block.split())
-            if any(c in text for c in FORMAT_COMPLAINTS):
-                continue
-            if not text:
-                continue
-            # Match against the registered reason strings.
-            if not any(_matches(text, g.reason) for g in GATES):
-                undocumented.append(text[:90])
+            match = re.search(r"gate='([\w-]+)'", block)
+            if not match:
+                missing.append(' '.join(block.split())[:90])
+            elif match.group(1) not in ids:
+                missing.append('%s (unregistered)' % match.group(1))
         self.assertEqual(
-            undocumented, [],
-            'ConversionError raised with no entry in core/gates.py. Either it '
-            'is a capability limit and needs a gate (with evidence and an '
-            'allows case), or it is a format complaint: %s' % undocumented)
+            missing, [],
+            'ConversionError raised without a registered gate id: %s' % missing)
 
-    def test_every_gate_reason_appears_in_the_code(self):
-        """And the reverse: a registered gate that no longer exists in code
-        is stale documentation."""
-        src = open(os.path.join(VS2_DIR, 'core', 'generator.py')).read()
-        det = open(os.path.join(VS2_DIR, 'core', 'detector.py')).read()
-        haystack = src + det
-        for g in GATES:
-            if not _matches(haystack, g.reason):
-                self.fail('gate %r is registered but its reason text is not '
-                          'in %s - update or delete it' % (g.id, g.module))
-
-
-def _norm(text):
-    """Collapse whitespace and drop %-format placeholders.
-
-    Source strings are wrapped across lines and interpolated, so compare on
-    normalized text with a distinctive literal fragment.
-    """
-    text = re.sub(r'%\([^)]*\)[sd]|%[sd]', ' ', text)
-    text = text.replace('"', ' ').replace("'", ' ')
-    return ' '.join(text.split())
-
-
-def _matches(haystack, reason):
-    """True if any substantial literal run of `reason` appears in `haystack`."""
-    hay = _norm(haystack)
-    # Split the reason on placeholders and try each literal part; the longest
-    # is the most distinctive.
-    parts = [p for p in re.split(r'%\([^)]*\)[sd]|%[sd]', reason) if p.strip()]
-    if not parts:
-        return _norm(reason) in hay
-    for part in parts:
-        frag = _norm(part)
-        if len(frag) >= 25 and frag in hay:
-            return True
-    # Fall back to the longest fragment, shortened to survive wrapping.
-    longest = max(parts, key=lambda p: len(_norm(p)))
-    frag = _norm(longest)
-    return len(frag) >= 12 and frag[:60] in hay
+    def test_every_registered_gate_is_used(self):
+        """The reverse: a registered gate that no code raises is stale."""
+        haystack = ''.join(
+            self._source(name) for name in (
+                'core/generator.py', 'core/detector.py', 'api.py',
+                'validators/validator.py'))
+        unused = [g.id for g in GATES
+                  if g.id not in DISCLOSURES
+                  and '"%s"' % g.id not in haystack
+                  and "'%s'" % g.id not in haystack]
+        self.assertEqual(unused, [],
+                         'gate ids registered but absent from the code: %s'
+                         % unused)
 
 
 if __name__ == '__main__':

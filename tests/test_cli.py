@@ -1,10 +1,12 @@
 """End-to-end CLI tests: argument handling, output paths, exit codes.
 
-Design decision 2 (PRD §8) is a user-facing contract and had never been
-implemented - the default wrote `converted_<name>.frag` into the current
-directory instead of `<name>.frag` beside the input. These tests pin it.
+Design decision 2 (PRD §8) is a user-facing contract: the default writes
+`<name>.frag` into the same directory as the input, never a
+`converted_<name>.frag` in the current directory. These tests pin it.
+
+The CLI is invoked as `python -m vs2convert.cli`, so the tests exercise the
+installed entry point rather than a private script path.
 """
-import importlib.util
 import io
 import os
 import shutil
@@ -12,15 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
-
-TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-VS2_DIR = os.path.dirname(TESTS_DIR)
-APP = os.path.join(VS2_DIR, 'vs2_convert.py')
-
-# Sentinel for "key was not in sys.modules at all" (None is a real value
-# with a meaning: blocked import).
-_ABSENT = object()
+from contextlib import redirect_stderr, redirect_stdout
 
 SIMPLE_ISF = '''/*{
   "INPUTS": [{"NAME": "Zoom", "TYPE": "float", "DEFAULT": 0.5,
@@ -45,13 +39,27 @@ NOUV_ISF = ('/*{"INPUTS": [{"NAME": "Zoom", "TYPE": "float",'
             ' "DEFAULT": 0.5, "MIN": 0.0, "MAX": 1.0}]}*/\n'
             'void main() { gl_FragColor = vec4(vec3(0.7 * Zoom), 1.0); }\n')
 
-# A real ISF block with no main(): _convert_isf raises its no-entry-point
-# gate, --force falls back, and the fallback strips uniforms but NOT
-# `varying` - so --validate finds a uniform/varying declaration and must
-# fail the run with exit 1.
-VALIDATE_ERR_ISF = ('/*{"INPUTS": [{"NAME": "Zoom", "TYPE": "float",'
-                    ' "DEFAULT": 0.5, "MIN": 0.0, "MAX": 1.0}]}*/\n'
-                    'varying vec2 vPos;\n')
+# A real ISF block with no main(): the generator raises its entry-point gate,
+# whatever --force says, because --force only overrides suitability.
+NO_ENTRY_ISF = ('/*{"INPUTS": [{"NAME": "Zoom", "TYPE": "float",'
+                ' "DEFAULT": 0.5, "MIN": 0.0, "MAX": 1.0}]}*/\n'
+                'varying vec2 vPos;\n')
+
+# Two distinct image inputs: suits detection, but the generator gate refuses
+# because VS-2 exposes one imageTex. Exit 1, not the suitability exit 3.
+MULTI_IMAGE_ISF = '''/*{
+  "INPUTS": [
+    {"NAME": "src0", "TYPE": "image", "SOURCE": "a"},
+    {"NAME": "src1", "TYPE": "image", "SOURCE": "b"}
+  ]
+}*/
+uniform sampler2D src0;
+uniform sampler2D src1;
+void main() {
+    fragColor = texture(src0, gl_FragCoord.xy / 100.0)
+              + texture(src1, gl_FragCoord.xy / 100.0);
+}
+'''
 
 # Bright, static, non-flat: passes empty/flat/dark, fails the motion check
 # (manifest movement defaults to true), so --verify must exit 1 "frozen".
@@ -63,10 +71,13 @@ STATIC_ISF = ('/*{"INPUTS": [{"NAME": "Zoom", "TYPE": "float",'
               '    gl_FragColor = vec4(vec3(uv.x * 60.0 * Zoom), 1.0);\n'
               '}\n')
 
+_ABSENT = object()
 
-def run(args, cwd):
-    return subprocess.run([sys.executable, APP] + args, cwd=cwd,
-                          capture_output=True, text=True)
+
+def run(args, cwd, stdin=None, env=None):
+    return subprocess.run([sys.executable, '-m', 'vs2convert.cli'] + args,
+                          cwd=cwd, capture_output=True, text=True,
+                          input=stdin, env=env)
 
 
 class OutputPathTests(unittest.TestCase):
@@ -126,10 +137,11 @@ class FlagTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.dir, 'ok.frag')))
         self.assertIn('dry run', r.stdout.lower())
 
-    def test_validate_flag_reports_valid(self):
-        r = run(['ok.fs', '--validate'], self.dir)
+    def test_validation_is_always_on(self):
+        """There is no --validate flag: every conversion is validated before
+        it is reported ok, and the verdict says so."""
+        r = run(['ok.fs'], self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        # the verdict names validation, whatever the glyph set in use
         self.assertIn('validated', r.stdout)
 
     def test_decline_exits_three_and_writes_nothing(self):
@@ -141,7 +153,7 @@ class FlagTests(unittest.TestCase):
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.dir, 'multi.frag')))
 
-    def test_force_overrides_the_decline(self):
+    def test_force_overrides_the_suitability_decline(self):
         bad = os.path.join(self.dir, 'multi.fs')
         with open(bad, 'w') as f:
             f.write('void mainImage(out vec4 f, in vec2 c){'
@@ -149,29 +161,22 @@ class FlagTests(unittest.TestCase):
         r = run(['multi.fs', '--force'], self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         # the override must be stated, so the result is not read as trusted
-        self.assertIn('expect it to be wrong', r.stdout.lower())
+        self.assertIn('forced past the suitability gate', r.stdout.lower())
         self.assertTrue(os.path.exists(os.path.join(self.dir, 'multi.frag')))
 
-    def test_verify_without_moderngl_fails_loudly(self):
-        """--verify must never exit 0 when it could not run.
-
-        The old renderer could not fail, and a silent skip reads as a pass.
-        """
-        r = run(['ok.fs', '--verify'], self.dir)
-        has_moderngl = True
+    def test_verify_without_render_deps_fails_loudly(self):
+        """--verify must never exit 0 when it could not run."""
         try:
             import moderngl  # noqa: F401
         except ImportError:
-            has_moderngl = False
-        if has_moderngl:
-            self.skipTest('moderngl present: the gate can actually run')
-        # Two acceptable loud-failure routes: the renderer returns a failed
-        # result (exit 1), or the import fails outright (exit 2). What must
-        # never happen is exit 0.
-        self.assertIn(r.returncode, (1, 2),
-                      'verify did not run but reported success: %s'
-                      % (r.stdout + r.stderr))
-        self.assertIn('moderngl', (r.stdout + r.stderr).lower())
+            pass
+        else:
+            self.skipTest('render deps present: the gate can actually run')
+        r = run(['ok.fs', '--verify'], self.dir)
+        self.assertEqual(r.returncode, 2,
+                         'verify did not run but reported success: %s'
+                         % (r.stdout + r.stderr))
+        self.assertIn('not verified', r.stdout.lower())
 
 
 class VerdictShapeTests(unittest.TestCase):
@@ -192,27 +197,28 @@ class VerdictShapeTests(unittest.TestCase):
 
     def test_ascii_mode_avoids_wide_glyphs(self):
         env = dict(os.environ, VS2_ASCII='1')
-        proc = subprocess.run([sys.executable, APP, 'ok.fs'], cwd=self.dir,
-                              capture_output=True, text=True, env=env)
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        r = run(['ok.fs'], self.dir, env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         for ch in ('\u2705', '\u26a0', '\u274c'):
-            self.assertNotIn(ch, proc.stdout,
+            self.assertNotIn(ch, r.stdout,
                              'emoji present despite VS2_ASCII=1')
 
-    def test_missing_verify_is_not_reported_as_failed(self):
-        """Exit 2 is a tooling problem, not a broken shader. Reporting it as
-        a failure sends people looking in the wrong place."""
-        has_gl = True
-        try:
-            import moderngl  # noqa: F401
-        except ImportError:
-            has_gl = False
-        if has_gl:
-            self.skipTest('moderngl present: the gate can actually run')
-        r = run(['ok.fs', '--verify'], self.dir)
-        self.assertEqual(r.returncode, 2)
-        self.assertIn('not verified', r.stdout.lower())
-        self.assertNotIn('failed', r.stdout.lower())
+
+class StdinTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def test_stdin_requires_an_output_path(self):
+        r = run(['-'], self.dir, stdin=SIMPLE_ISF)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('OUTPUT is required', r.stderr)
+
+    def test_stdin_converts_to_an_explicit_output(self):
+        out = os.path.join(self.dir, 'from-stdin.frag')
+        r = run(['-', out], self.dir, stdin=SIMPLE_ISF)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(os.path.exists(out))
 
 
 class UnicodeProbeTests(unittest.TestCase):
@@ -224,98 +230,25 @@ class UnicodeProbeTests(unittest.TestCase):
     """
 
     def test_probe_writes_nothing(self):
-        import core.report as report
+        from vs2convert.core import report
         s = io.StringIO()
         self.assertTrue(report.supports_unicode(s))
         self.assertEqual(s.getvalue(), '',
                          'probe wrote into the stream it was checking')
 
 
-class VerifyContractTests(unittest.TestCase):
-    """--verify must never exit 0 when the render check did not run.
-
-    This FORCES the failure instead of waiting for an interpreter without
-    moderngl. The two tests above skip whenever moderngl is present, so between
-    them the contract was guarded only in the interpreter where --verify cannot
-    run at all: in the venv they skip, and in plain python3 the corpus render
-    test skips instead. A gate that cannot fire in the environment it describes
-    is the failure mode tests/test_gate_audit.py exists to catch.
-
-    Forced how: a throwaway `renderer/` package whose import raises ImportError
-    goes first on PYTHONPATH, and the CLI is copied beside it so that its own
-    directory (sys.path[0], and the PROJECT_ROOT it inserts) holds no
-    `renderer/`. Everything else resolves from vs2_convert as usual.
-    """
-
-    def setUp(self):
-        self.dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.dir)
-        with open(os.path.join(self.dir, 'ok.fs'), 'w') as f:
-            f.write(SIMPLE_ISF)
-
-    def test_render_import_failure_exits_2_even_where_moderngl_is_present(self):
-        shim = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, shim)
-        os.mkdir(os.path.join(shim, 'renderer'))
-        with open(os.path.join(shim, 'renderer', '__init__.py'), 'w') as f:
-            f.write('raise ImportError("forced for the exit-code contract")\n')
-
-        appdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, appdir)
-        app = os.path.join(appdir, 'vs2_convert.py')
-        shutil.copy2(APP, app)
-
-        env = dict(os.environ, PYTHONPATH=os.pathsep.join([shim, VS2_DIR]))
-        # The child must NOT be coverage-instrumented: it runs a COPY of the
-        # app under a temporary path, and addCleanup deletes that path before
-        # run_coverage.sh's `coverage report` step. The dangling data file
-        # makes report exit 1 with "No source for code: .../vs2_convert.py".
-        # Reproduced with `sh vs2_convert/tests/run_coverage.sh` before this
-        # line existed; the CLI-only paths are still measured because the
-        # other test_cli tests run APP at its real path.
-        env.pop('COVERAGE_PROCESS_START', None)
-        env.pop('COVERAGE_FILE', None)
-        r = subprocess.run([sys.executable, app, 'ok.fs', '--verify'],
-                           cwd=self.dir, capture_output=True, text=True,
-                           env=env)
-        self.assertEqual(
-            r.returncode, 2,
-            '--verify exited %s when the render check could not run. Exit 0 '
-            'here reports an unverified shader as verified. Output: %s'
-            % (r.returncode, (r.stdout + r.stderr)[-300:]))
-        self.assertIn('not verified', r.stdout.lower())
-        self.assertNotIn('failed', r.stdout.lower())
-
-
 class CliInnerPathTests(unittest.TestCase):
     """The CLI's error and diagnostic branches, driven in-process.
 
-    WHY IN-PROCESS rather than subprocess like FlagTests:
-
-    * The renderer-ImportError branch (vs2_convert.py `except ImportError:
-      ... exit 2`) can only fire when `renderer/` is absent beside the app.
-      In a subprocess the real package sits at sys.path[0], so
-      VerifyContractTests copies the app next to a throwing shim - and a
-      copy runs under a path coverage cannot attribute. In-process,
-      `sys.modules['renderer'] = None` raises the same ImportError against
-      the REAL file, so those lines land in the coverage report too.
-
-    * Coverage attribution: subprocess children record vs2_convert.py only
-      when they execute the real path. Everything here runs main() directly
-      against the real file, which is how these branches entered
-      `run_coverage.sh`'s report (vs2_convert.py 68% -> 100%).
-
-    VerifyContractTests stays: it proves the contract through a real
-    process. These prove the same contract plus the branches around it.
-    Permanent red-proofs for the key ones live in mutants.py.
+    In-process lets a test block an import with `sys.modules[name] = None`
+    against the real module, which is how the --verify degradation contract
+    is forced even in an interpreter that has the render dependencies.
     """
 
     @classmethod
     def setUpClass(cls):
-        spec = importlib.util.spec_from_file_location('vs2_cli_under_test',
-                                                      APP)
-        cls.cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.cli)
+        from vs2convert import cli
+        cls.cli = cli
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -325,9 +258,9 @@ class CliInnerPathTests(unittest.TestCase):
         """Run cli.main() with argv. Returns (exit_code, stdout_text)."""
         out = io.StringIO()
         saved_argv = sys.argv
-        sys.argv = ['vs2_convert.py'] + argv
+        sys.argv = ['vs2convert'] + argv
         try:
-            with redirect_stdout(out):
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
                 try:
                     code = self.cli.main()
                 except SystemExit as e:
@@ -354,7 +287,7 @@ class CliInnerPathTests(unittest.TestCase):
         (no `warnings.append` exists in detector.py today), so a warning is
         stubbed on the function to prove the CLI loop that surfaces detector
         warnings is live rather than dead code."""
-        import core.detector as detector
+        from vs2convert.core import detector
         real = detector.detect_format
 
         def with_warning(source):
@@ -405,15 +338,13 @@ class CliInnerPathTests(unittest.TestCase):
 
     def test_converter_gate_after_suitability_exits_1(self):
         """The multi-image ISF gate sits in the generator, PAST the
-        suitability check: the verdict is exit 1 with the skill handoff
-        message, not the suitability gate's exit 3."""
-        src = os.path.join(VS2_DIR, 'GLSLOP_collection',
-                           'developer-k0rz1pe2.fs')
-        self.assertTrue(os.path.exists(src), 'fixture missing: %s' % src)
+        suitability check: the verdict is exit 1 with the gate id, not the
+        suitability gate's exit 3."""
+        src = self._write('two-images.fs', MULTI_IMAGE_ISF)
         code, out = self._run([src, os.path.join(self.dir, 'out.frag')])
         self.assertEqual(code, 1, out)
         self.assertIn('declined', out)
-        self.assertIn('vs2-shader-expert', out)
+        self.assertIn('isf-multiple-image-inputs', out)
 
     # -- unverified disclosure --------------------------------------------
 
@@ -447,38 +378,35 @@ class CliInnerPathTests(unittest.TestCase):
 
     def test_validation_warnings_do_not_fail_the_run(self):
         src = self._write('plain.fs', NOUV_ISF)
-        code, out = self._run(['--validate', src])
+        code, out = self._run([src])
         self.assertEqual(code, 0, out)
         self.assertIn('Missing coordinate setup', out)
 
-    def test_validation_errors_fail_with_exit_1(self):
-        """--force output can carry a construct the validator REJECTS: an
-        ISF with no main() raises the entry-point gate, the fallback strips
-        uniforms but leaves `varying`, so --validate must fail the run - a
-        validator ERROR that only warned would let a known-broken forced
-        conversion exit 0."""
-        src = self._write('nomain.fs', VALIDATE_ERR_ISF)
-        code, out = self._run(['--force', '--validate', src])
+    def test_forced_source_that_fails_validation_exits_1(self):
+        """--force only overrides suitability. An ISF with no main() falls
+        back to a body the validator rejects, so the run exits 1 and writes
+        nothing - a forced conversion must never be reported as a success."""
+        src = self._write('nomain.fs', NO_ENTRY_ISF)
+        code, out = self._run(['--force', src])
         self.assertEqual(code, 1, out)
-        self.assertIn('validation failed', out)
+        self.assertIn('structural-validation', out)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'nomain.frag')))
 
-    # -- verify: the three exit routes ------------------------------------
+    # -- verify: the exit routes ------------------------------------------
 
     def test_renderer_import_failure_exits_2_in_process(self):
         """sys.modules[..] = None raises ImportError for those names, which
         is what a missing renderer package raises - in-process, against the
-        real file, wherever moderngl is installed or not."""
-        saved = {}
-        for key in ('renderer', 'renderer.pipeline'):
-            saved[key] = sys.modules.get(key, _ABSENT)
-            sys.modules[key] = None
+        real module, wherever moderngl is installed or not."""
+        key = 'vs2convert.renderer.pipeline'
+        saved = sys.modules.get(key, _ABSENT)
+        sys.modules[key] = None
 
         def restore():
-            for key, val in saved.items():
-                if val is _ABSENT:
-                    sys.modules.pop(key, None)
-                else:
-                    sys.modules[key] = val
+            if saved is _ABSENT:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = saved
 
         self.addCleanup(restore)
         src = self._write('ok.fs', SIMPLE_ISF)

@@ -15,16 +15,11 @@ a line `run_coverage.sh` reported missed (pipeline.py was 72%):
 GL-context tests skip where there is no usable context (plain python3);
 the venv has one, and that is where coverage is measured.
 """
-import os
 import sys
 import unittest
 
-TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-VS2_DIR = os.path.dirname(TESTS_DIR)
-sys.path.insert(0, VS2_DIR)
-
-import renderer.pipeline as pipeline  # noqa: E402
-from core.generator import convert  # noqa: E402
+from vs2convert.renderer import pipeline
+from vs2convert.core.generator import convert
 
 # Raw VS-2 bodies (run_verification takes .frag content, not ISF sources).
 # No manifest comment: the `movement` flag defaults to True, so a static body
