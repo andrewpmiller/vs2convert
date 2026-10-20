@@ -1,0 +1,8 @@
+// GLSLSandbox variant declaring only `resolution` (no time uniform), which
+// exercises the other half of the detection pattern.
+uniform vec2 resolution;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / resolution.xy;
+    gl_FragColor = vec4(uv, 0.5, 1.0);
+}

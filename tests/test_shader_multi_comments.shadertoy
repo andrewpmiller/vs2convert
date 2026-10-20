@@ -1,0 +1,47 @@
+/* SPDX-License-Identifier: MIT */
+// License header
+
+/*
+ * Multi-comment-block test shader:
+ * The first comment blocks are NOT JSON manifest.
+ * The real manifest is in the third /* */ block.
+ */
+/* manifest */
+/*
+{
+  "parameters": [
+    {
+      "name": "detail",
+      "default": 0.5,
+      "min": 0.0,
+      "max": 1.0,
+      "type": "float"
+    },
+    {
+      "name": "form",
+      "default": 0.5,
+      "min": 0.0,
+      "max": 1.0,
+      "type": "float"
+    },
+    {
+      "name": "speed",
+      "default": 0.5,
+      "min": 0.0,
+      "max": 1.0,
+      "type": "float"
+    }
+  ]
+}
+*/
+
+#define PI 3.14159265358979
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+  vec2 uv = fragCoord / iResolution.xy;
+  float t = iTime * 0.5;
+  float wave = sin(uv.x * 10.0 + t) * cos(uv.y * 10.0 + t);
+  vec3 color = vec3(wave * 0.5 + 0.5);
+  fragColor = vec4(color, 1.0);
+}
