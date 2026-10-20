@@ -20,6 +20,11 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/andrewpmiller/vs2convert"
+Repository = "https://github.com/andrewpmiller/vs2convert"
+Issues = "https://github.com/andrewpmiller/vs2convert/issues"
+
 [project.optional-dependencies]
 render = ["moderngl", "numpy", "Pillow"]
 dev = ["pytest"]
