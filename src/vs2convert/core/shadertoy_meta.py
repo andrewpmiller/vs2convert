@@ -58,7 +58,13 @@ _META_BLOCK_RE = re.compile(r'/\*(.*?)\*/', re.DOTALL)
 
 
 def find_meta_file(body_path):
-    """Sidecar next to the body: <stem>.stmeta.json, else a lone one nearby."""
+    """Sidecar next to the body: <stem>.stmeta.json, else a lone one nearby.
+
+    `None` means there is no file (stdin); only --meta and the inline block
+    can supply metadata then.
+    """
+    if not body_path:
+        return None
     stem, _ = os.path.splitext(body_path)
     for cand in (stem + '.stmeta.json', body_path + '.stmeta.json'):
         if os.path.exists(cand):
