@@ -19,7 +19,7 @@ from .core.shadertoy_meta import load_meta
 
 # Where a declined conversion is reported. Kept in one place: it is printed
 # on every decline, so it must be right.
-ISSUES_URL = "https://github.com/andrewmiller/vs2convert/issues/new"
+ISSUES_URL = "https://github.com/andrewpmiller/vs2convert/issues/new"
 
 
 def main():

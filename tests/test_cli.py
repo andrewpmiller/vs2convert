@@ -152,6 +152,8 @@ class FlagTests(unittest.TestCase):
         r = run(['multi.fs'], self.dir)
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.dir, 'multi.frag')))
+        self.assertIn('github.com/andrewpmiller/vs2convert/issues/new',
+                      r.stdout)
 
     def test_force_overrides_the_suitability_decline(self):
         bad = os.path.join(self.dir, 'multi.fs')
