@@ -88,6 +88,13 @@ class VerdictTests(unittest.TestCase):
         self.assertIn('shadertoy-unrepresentable-channel',
                       [x.gate for x in r.rejections])
 
+    def test_buffer_channel_cannot_be_forced(self):
+        r = convert(BODY, force=True,
+                    meta={'channels': {'iChannel0': {'sampler': 'buffer'}}})
+        self.assertFalse(r.ok)
+        self.assertIn('shadertoy-unrepresentable-channel',
+                      [x.gate for x in r.rejections])
+
     def test_metadata_is_ignored_for_isf(self):
         """A sidecar sits next to an ISF file too, but ISF carries its own
         declarations, so a buffer declaration must not leak into it."""

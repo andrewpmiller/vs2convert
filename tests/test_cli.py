@@ -156,15 +156,31 @@ class FlagTests(unittest.TestCase):
                       r.stdout)
 
     def test_force_overrides_the_suitability_decline(self):
+        # engine-var-redeclaration is a limitation the user can knowingly
+        # accept; the multi-channel gate below is not.
+        bad = os.path.join(self.dir, 'redecl.fs')
+        with open(bad, 'w') as f:
+            f.write('vec2 resolution;\n'
+                    'void main(){ fragColor = vec4(resolution, 0.0, 1.0); }')
+        r = run(['redecl.fs', '--force'], self.dir)
+        # The suitability decline is overridden; the resulting body still
+        # fails the structural validator, so nothing is written.
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotIn('suitability/engine-var-redeclaration', r.stdout)
+        self.assertIn('structural-validation', r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'redecl.frag')))
+
+    def test_force_does_not_collapse_distinct_channels(self):
+        """VS-2 exposes one imageTex. Forcing this used to drop one channel
+        and still exit 0; the output cannot be made correct."""
         bad = os.path.join(self.dir, 'multi.fs')
         with open(bad, 'w') as f:
             f.write('void mainImage(out vec4 f, in vec2 c){'
                     ' f = texture(iChannel0, c) * texture(iChannel1, c); }')
         r = run(['multi.fs', '--force'], self.dir)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        # the override must be stated, so the result is not read as trusted
-        self.assertIn('forced past the suitability gate', r.stdout.lower())
-        self.assertTrue(os.path.exists(os.path.join(self.dir, 'multi.frag')))
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn('shadertoy-multi-channel', r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'multi.frag')))
 
     def test_verify_without_render_deps_fails_loudly(self):
         """--verify must never exit 0 when it could not run."""
@@ -318,6 +334,21 @@ class CliInnerPathTests(unittest.TestCase):
         self.assertIn('may be a custom speed parameter', out)
         self.assertIn('baked:', out)
 
+    def test_surplus_isf_inputs_are_reported_by_default(self):
+        """Baked inputs must be visible without -v: they are real defaults,
+        not silent drops."""
+        inputs = ', '.join(
+            '{"NAME": "k%d", "TYPE": "float", "DEFAULT": 0.5,'
+            ' "MIN": 0.0, "MAX": 1.0}' % i for i in range(9))
+        src = self._write(
+            'many.fs',
+            '/*{"INPUTS": [%s]}*/\n'
+            'void main(){ gl_FragColor = vec4(vec3(0.5), 1.0); }' % inputs)
+        code, out = self._run([src])
+        self.assertEqual(code, 0, out)
+        self.assertIn('baked:', out)
+        self.assertIn('k8', out)
+
     # -- pass metadata ----------------------------------------------------
 
     def test_missing_explicit_meta_file_exits_1(self):
@@ -335,6 +366,24 @@ class CliInnerPathTests(unittest.TestCase):
         code, out = self._run(['-v', '--meta', meta, src])
         self.assertEqual(code, 0, out)
         self.assertIn('pass metadata from', out)
+
+    def test_malformed_sidecar_does_not_abort_an_isf(self):
+        """Pass metadata belongs to Shadertoy. Loading it for every format
+        let a stray .stmeta.json fail an ISF conversion."""
+        src = self._write('side.fs', SIMPLE_ISF)
+        with open(src + '.stmeta.json', 'w') as f:
+            f.write('not json')
+        code, out = self._run([src])
+        self.assertEqual(code, 0, out)
+
+    def test_explicit_meta_is_ignored_for_isf(self):
+        meta = os.path.join(self.dir, 'ch.json')
+        with open(meta, 'w') as f:
+            f.write('{"channels": {}}')
+        src = self._write('m.fs', SIMPLE_ISF)
+        code, out = self._run(['--meta', meta, src])
+        self.assertEqual(code, 0, out)
+        self.assertIn('ignoring --meta', out)
 
     # -- declines ---------------------------------------------------------
 
@@ -368,6 +417,15 @@ class CliInnerPathTests(unittest.TestCase):
             self.assertIn('INPUTS', f.read(),
                           'the input must be untouched after the refusal')
 
+    def test_refuses_to_overwrite_an_explicit_input_path(self):
+        """`vs2convert in.fs in.fs` used to overwrite the source, exit 0."""
+        src = self._write('same.fs', SIMPLE_ISF)
+        code, out = self._run([src, src])
+        self.assertEqual(code, 4, out)
+        self.assertIn('refusing to overwrite', out)
+        with open(src) as f:
+            self.assertIn('INPUTS', f.read(), 'the input was overwritten')
+
     def test_unwritable_output_exits_4(self):
         src = self._write('ok.fs', SIMPLE_ISF)
         subdir = os.path.join(self.dir, 'adir')
@@ -383,6 +441,42 @@ class CliInnerPathTests(unittest.TestCase):
         code, out = self._run([src])
         self.assertEqual(code, 0, out)
         self.assertIn('Missing coordinate setup', out)
+
+    def test_gl_context_failure_is_reported_as_unavailable(self):
+        """A machine whose OpenGL driver cannot create a context has not
+        produced a failed shader; exit 2, like missing render deps."""
+        import vs2convert.renderer.pipeline as pipeline
+        real = pipeline.run_verification
+        pipeline.run_verification = lambda *a, **k: {
+            'passed': False,
+            'errors': ['could not create a GL context: simulated'],
+            'metrics': {}}
+        self.addCleanup(setattr, pipeline, 'run_verification', real)
+        src = self._write('gl.fs', SIMPLE_ISF)
+        code, out = self._run(['--verify', src])
+        self.assertEqual(code, 2, out)
+        self.assertIn('OpenGL is not working', out)
+
+    def test_verify_prints_the_measured_metrics(self):
+        src = self._write('anim.fs', SIMPLE_ISF)
+        code, out = self._run(['--verify', src])
+        if code == 2:
+            self.skipTest('render verification unavailable')
+        self.assertEqual(code, 0, out)
+        self.assertIn('rendered (mean', out)
+
+    def test_decline_issue_url_keeps_the_command_line(self):
+        from urllib.parse import unquote_plus
+        from vs2convert.api import convert
+        r = convert(
+            'void mainImage(out vec4 f, in vec2 c){'
+            ' f = texture(iChannel0, c) * texture(iChannel1, c); }',
+            force=True)
+        self.assertFalse(r.ok)
+        url = self.cli._issue_url('two.fs', r, 'source',
+                                  ['--force', 'two.fs', 'out.frag'])
+        body = unquote_plus(url)
+        self.assertIn('vs2convert --force two.fs out.frag', body)
 
     def test_forced_source_that_fails_validation_exits_1(self):
         """--force only overrides suitability. An ISF with no main() falls

@@ -8,12 +8,14 @@ the verdict, and writes the file. All conversion decisions live in the API.
 import argparse
 import json
 import re
+import shlex
 import sys
 import textwrap
 from pathlib import Path
 from urllib.parse import urlencode
 
 from . import api
+from .core.detector import detect_format
 from .core.report import Reporter
 from .core.shadertoy_meta import load_meta
 
@@ -30,7 +32,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Exit codes:
   0  converted (always validated) and, if requested, rendered
-  1  declined - includes validation failure and a failed render check
+  1  declined, or the input/metadata could not be read - includes
+     validation failure and a failed render check
   2  render verification unavailable, or bad command-line usage
   3  the source is not suitable for conversion
   4  could not write the output (missing directory, write error, would
@@ -89,15 +92,25 @@ Examples:
         r.step("reading %s" % source_path)
 
     # --- metadata -------------------------------------------------------------
+    # Pass metadata is a Shadertoy concept. Loading it for every format made
+    # an ISF header look like pass metadata and let a stray .stmeta.json
+    # abort an ISF conversion.
     meta = None
     try:
-        meta, meta_from = load_meta(str(source_path) if source_path else None,
-                                    source, args.meta)
-    except (ValueError, OSError, json.JSONDecodeError) as exc:
-        _fail(r, name, "could not read pass metadata", [str(exc)],
-              "fix or omit --meta", 1)
-    if meta:
-        r.step("pass metadata from %s" % meta_from)
+        fmt = detect_format(source).get("format")
+    except Exception:
+        fmt = None
+    if fmt in ("Shadertoy", "PlainGLSL"):
+        try:
+            meta, meta_from = load_meta(
+                str(source_path) if source_path else None, source, args.meta)
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            _fail(r, name, "could not read pass metadata", [str(exc)],
+                  "fix or omit --meta", 1)
+        if meta:
+            r.step("pass metadata from %s" % meta_from)
+    elif args.meta:
+        r.note("ignoring --meta: only Shadertoy sources use pass metadata")
 
     # --- convert --------------------------------------------------------------
     r.step("converting")
@@ -105,12 +118,12 @@ Examples:
                          force=args.force, meta=meta)
 
     if not result.ok:
-        _report_decline(r, name, result, source)
+        _report_decline(r, name, result, source, sys.argv[1:])
         sys.exit(3 if any(x.stage == "suitability" for x in result.rejections)
                  else 1)
 
     for item in result.baked:
-        r.step("baked: %s" % item)
+        r.note("baked: %s" % item)
     for item in result.warnings:
         if item.startswith("UNVERIFIED"):
             r.unverified(_short_unverified(item), _unverified_body(item))
@@ -124,10 +137,13 @@ Examples:
         output_path = Path(args.output)
     else:
         output_path = source_path.with_suffix(".frag")
-        if output_path.resolve() == source_path.resolve():
-            _fail(r, name, "refusing to overwrite the input",
-                  ["the default output for a .frag input is the input"],
-                  "pass an explicit output filename", 4)
+    # The guard must cover an explicit output too: `vs2convert in.fs in.fs`
+    # used to overwrite the source and report success.
+    if source_path is not None and \
+            output_path.resolve() == source_path.resolve():
+        _fail(r, name, "refusing to overwrite the input",
+              ["the output path is the input file"],
+              "pass a different output filename", 4)
 
     stats = ["%s \u00b7 %d param%s" % (result.format, len(result.params),
                                         "" if len(result.params) == 1 else "s")]
@@ -145,13 +161,21 @@ Examples:
             errs = verification["errors"]
             if any("unavailable" in e for e in errs):
                 _unavailable(r, name, errs)
+            if any("could not create a GL context" in e for e in errs):
+                _unavailable(
+                    r, name, errs,
+                    "OpenGL is not working on this machine, so the shader "
+                    "was not rendered")
             compile_fail = any("compile" in e for e in errs)
             _fail(r, name, "render check failed", _gate_lines(errs),
                   ("the output did not compile; this is a converter defect, "
                    "not a problem with your source" if compile_fail else
                    "it compiled but is not showing anything useful"), 1)
         metrics = verification.get("metrics", {})
-        stats.append("rendered (motion %s)" % metrics.get("motion"))
+        shown = ", ".join(
+            "%s %s" % (k, metrics[k])
+            for k in ("mean", "std", "alpha", "motion") if k in metrics)
+        stats.append("rendered (%s)" % shown if shown else "rendered")
 
     # --- strict ---------------------------------------------------------------
     if args.strict and unverified:
@@ -178,7 +202,7 @@ Examples:
     return 0
 
 
-def _report_decline(r, name, result, source):
+def _report_decline(r, name, result, source, argv=None):
     """One `stage/gate: reason` line per rejection, then its advice."""
     code = 3 if any(x.stage == "suitability" for x in result.rejections) else 1
     body = []
@@ -191,14 +215,14 @@ def _report_decline(r, name, result, source):
               action="fix the source, or convert it by hand", exit_code=code)
     print()
     print("Report this with the source: %s"
-          % _issue_url(name, result, source))
+          % _issue_url(name, result, source, argv))
 
 
-def _issue_url(name, result, source):
+def _issue_url(name, result, source, argv=None):
     gates = ", ".join(sorted({x.gate for x in result.rejections}))
     title = "Declined: %s (%s)" % (name, gates)
-    lines = ["Command: vs2convert %s" % name, "",
-             "Rejections:"]
+    command = "vs2convert %s" % (shlex.join(argv) if argv else name)
+    lines = ["Command: %s" % command, "", "Rejections:"]
     for rejection in result.rejections:
         lines.append("- %s/%s: %s" % (rejection.stage, rejection.gate,
                                       rejection.reason))
@@ -207,10 +231,10 @@ def _issue_url(name, result, source):
     return ISSUES_URL + "?" + urlencode({"title": title, "body": body})
 
 
-def _unavailable(r, name, errs=None):
+def _unavailable(r, name, errs=None, action=None):
     body = [str(e) for e in (errs or ["the render check could not run"])]
-    action = ("rendering needs moderngl+numpy+Pillow; "
-              "install vs2convert[render]")
+    action = action or ("rendering needs moderngl+numpy+Pillow; "
+                        "install vs2convert[render]")
     r.skipped(name, "converted, but not verified", body=_wrap(body),
               action=action, exit_code=2)
     sys.exit(2)

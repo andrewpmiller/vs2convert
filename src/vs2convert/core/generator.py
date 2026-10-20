@@ -21,6 +21,7 @@ import re
 import json
 import uuid as _uuid
 
+from .gates import NON_FORCEABLE
 from .textutil import code_only
 
 MAX_PARAMS = 7
@@ -254,22 +255,30 @@ def _rewrite_output(source: str) -> str:
             cur += ch
     args.append(cur)
     args = [a.strip() for a in args]
-    # The match regex only ever matches a `vec4(` call, so every shape below
-    # is a vec4 and the trailing arg is alpha:
+    # The match regex only ever matches a `vec4(` call. Every valid shape:
     #   vec4(r,g,b,a)      4 args
     #   vec4(vec2,g,b)     3 args
     #   vec4(rgb, a)       2 args
-    #   vec4(vec3)         1 arg  (no alpha)
+    #   vec4(v)            1 arg
+    # A three-arg vec4 whose first argument is a vec2 needs vec3(v2, g),
+    # not vec3(v2, g, b) - the old code emitted four components and produced
+    # GLSL that did not compile (found 2026-10-20: fragColor = vec4(uv, .5, 1)).
+    vec2_names = set(re.findall(r'\bvec2\s+([A-Za-z_]\w*)', source))
+
+    def is_vec2(text):
+        return (text.startswith('vec2(') or text in vec2_names
+                or bool(re.search(r'\.(?:xy|rg|st)$', text)))
+
     if len(args) == 4:
         expr = f"vec3({args[0]}, {args[1]}, {args[2]})"
-    elif len(args) == 3:
-        expr = f"vec3({args[0]}, {args[1]}, {args[2]})"
-    elif len(args) == 2:
+    elif len(args) == 3 and is_vec2(args[0]):
+        expr = f"vec3({args[0]}, {args[1]})"
+    elif len(args) == 2 and not is_vec2(args[0]):
         expr = args[0]
     elif len(args) == 1:
-        expr = args[0]
+        expr = f"({args[0]}).rgb"
     else:
-        return source  # unexpected shape; leave alone rather than corrupt it
+        return source  # ambiguous shape; leave it rather than corrupt it
     end = close_idx + 1
     while end < len(source) and source[end] in ' \t':
         end += 1
@@ -307,7 +316,7 @@ def _rewrite_output(source: str) -> str:
         elif len(args) == 2:
             alpha_expr = args[1]
         elif len(args) == 1:
-            alpha_expr = '1.0'
+            alpha_expr = "(%s).a" % args[0]
         else:
             return source  # ambiguous shape; leave it rather than guess
         replacement = ("{\n"
@@ -1181,6 +1190,9 @@ def _convert_isf(source: str, report: dict, meta: dict = None) -> tuple:
     body = _rename_shadowed_engine_vars(body)
     body = _rewrite_output(body)
     body = _ensure_precision(body)
+    if not re.search(r'\bvoid\s+main\s*\(', body):
+        raise ConversionError("no main() entry point found",
+                              gate='missing-entry-point')
     for p in manifest:
         p.pop('_lo', None)
         p.pop('_hi', None)
@@ -1240,12 +1252,12 @@ def convert(source: str, fmt: str, shader_name: str,
 
     try:
         body, params = fmt_map[fmt](source, report, meta=meta)
-    except ConversionError:
+    except ConversionError as exc:
         # --force means "convert anyway", so a capability gate that the user
-        # has explicitly overridden must not abort the run. The result is
-        # reported as such and is very likely broken; the render gate is the
-        # only real check.
-        if not force:
+        # has explicitly overridden must not abort the run. Gates in
+        # NON_FORCEABLE are different: no fallback can express them, so the
+        # decline stands.
+        if not force or exc.gate in NON_FORCEABLE:
             raise
         report['warnings'].append(
             "FORCED past a hard conversion gate: the output is very likely "

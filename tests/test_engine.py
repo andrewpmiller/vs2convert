@@ -538,6 +538,15 @@ class RealShadertoyGlitchTests(unittest.TestCase):
         frag = convert(src, 'PlainGLSL', 'p')['frag']
         self.assertIn('coloredPixels', frag)
 
+    def test_vec2_first_output_rewrite_keeps_the_components(self):
+        """vec4(vec2, a, b) has three arguments but four components. The old
+        rewrite emitted vec3(v2, a, b), which does not compile."""
+        src = ('void main(){ vec2 uv = gl_FragCoord.xy / resolution.xy;'
+               ' fragColor = vec4(uv, 0.5, 1.0); }')
+        frag = convert(src, 'PlainGLSL', 'p')['frag']
+        self.assertIn('vec3(uv, 0.5)', frag)
+        self.assertNotIn('vec3(uv, 0.5, 1.0)', frag)
+
     def test_mainimage_params_are_rewritten_by_name(self):
         """Shadertoy parameter names are arbitrary. Stripping the signature
         without rewriting the body left `f`/`c` referring to identifiers that
@@ -647,10 +656,27 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
                          'ISF')
 
     def test_isf_params_are_not_lost(self):
-        result = convert(self.ISF_WITH_MAINIMAGE, 'ISF', 'both')
+        src = '''/*{
+  "INPUTS": [ {"NAME": "Zoom", "TYPE": "float", "DEFAULT": 3.0,
+               "MIN": 1.0, "MAX": 6.0} ]
+}*/
+void main() {
+    vec2 uv = gl_FragCoord.xy / RENDERSIZE.xy;
+    fragColor = vec4(uv * Zoom, 1.0);
+}
+'''
+        result = convert(src, 'ISF', 'both')
         names = [p['name'] for p in result['params']]
         self.assertIn('zoom', names, 'the ISF knob was discarded')
         self.assertIn('fragColor', result['frag'])
+
+    def test_isf_with_only_mainimage_is_declined(self):
+        """ISF requires void main(). A Shadertoy-style mainImage without the
+        wrapper used to be written as a file with no entry point and reported
+        validated."""
+        with self.assertRaises(ConversionError) as ctx:
+            convert(self.ISF_WITH_MAINIMAGE, 'ISF', 'both')
+        self.assertEqual(ctx.exception.gate, 'missing-entry-point')
 
     def test_shadertoy_with_vs2_params_block_is_still_shadertoy(self):
         """Lowercase "parameters" is a VS-2-style manifest a Shadertoy .txt

@@ -222,6 +222,14 @@ class AllowsPositiveControlTests(unittest.TestCase):
                               % (gate_id, e))
 
 
+class HlslDetectionTests(unittest.TestCase):
+    def test_plain_hlsl_entry_point_is_declined(self):
+        info = check_suitability(
+            'float4 main(float2 uv : TEXCOORD0) : SV_Target {'
+            ' return float4(uv, 0, 1); }')
+        self.assertIn('hlsl-milkdrop', info['error_gates'])
+
+
 class RegistryMatchesCodeTests(unittest.TestCase):
     """The registry must not drift from the code it describes."""
 

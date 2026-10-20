@@ -33,6 +33,8 @@ GLSLSANDBOX_RESOLUTION_RE = re.compile(r'uniform\s+vec2\s+resolution\s*;')
 HLSL_FRACTION_RE = re.compile(r'\bfrac\s*\(')
 HLSL_LERP_RE = re.compile(r'\blerp\s*\(')
 HLSL_TEXTURE2D_RE = re.compile(r'\btexture2D\s*\(|\btex2D\s*\(')
+HLSL_API_RE = re.compile(r'\bSV_Target\b|\bTexture2D\b|\btechnique(?:10|11)?\b')
+HLSL_MAIN_RE = re.compile(r'\b(?:float|half)[234](?:x[234])?\s+main\s*\(')
 
 
 def detect_format(source: str) -> dict:
@@ -64,6 +66,12 @@ def detect_format(source: str) -> dict:
         error_gates.append('hlsl-milkdrop')
     if HLSL_TEXTURE2D_RE.search(code):
         errors.append("Contains HLSL function 'texture2D()' or 'tex2D()' (use 'texture()' in GLSL)")
+        error_gates.append('hlsl-milkdrop')
+    if HLSL_API_RE.search(code):
+        errors.append("Contains HLSL/Shader Model syntax (SV_Target, Texture2D or technique)")
+        error_gates.append('hlsl-milkdrop')
+    if HLSL_MAIN_RE.search(code):
+        errors.append("Contains an HLSL entry point (floatN/halfN main) instead of GLSL")
         error_gates.append('hlsl-milkdrop')
     
     # Check for engine variable redeclaration

@@ -41,6 +41,18 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 
+# Gates that describe something the target cannot express. --force is
+# for a limitation the user accepts; on these it can only produce an
+# output that does not compile or silently loses an input.
+NON_FORCEABLE = frozenset({
+    'hlsl-milkdrop',
+    'shadertoy-multi-channel',
+    'shadertoy-unrepresentable-channel',
+    'isf-multiple-image-inputs',
+    'too-many-parameters',
+})
+
+
 @dataclass(frozen=True)
 class Gate:
     """One refusal, with the evidence behind it and what it still permits.

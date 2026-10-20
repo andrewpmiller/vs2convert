@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from .core.detector import check_suitability
+from .core.gates import NON_FORCEABLE
 from .core.generator import ConversionError
 from .core.generator import convert as _convert
 from .validators.validator import run_validation
@@ -133,9 +134,11 @@ def _convert_checked(source, name, force, meta, validate) -> ConversionResult:
     warnings = list(verdict.get("warnings") or [])
 
     if errors:
-        # HLSL/MilkDrop is a fact about the target, not a limitation this
-        # tool can override: forcing it emits a body with no usable main().
-        if force and "hlsl-milkdrop" not in gates:
+        # A non-forceable gate is a fact about the target, not a limitation
+        # this tool can override. Forcing one emits a body that does not
+        # compile or silently drops an input, so decline even with --force.
+        blocked = [g for g in gates if g in NON_FORCEABLE]
+        if force and not blocked:
             warnings.append(
                 "FORCED past the suitability gate: the output is very likely "
                 "broken.")

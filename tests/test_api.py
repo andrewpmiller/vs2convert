@@ -20,6 +20,24 @@ SHADERTOY_TWO_CHANNELS = (
 
 HLSL = 'float4 main(float2 uv) : SV_Target { return float4(frac(uv), 0, 1); }'
 
+REDECL = ('uniform vec2 resolution;\n'
+          'void mainImage(out vec4 f, in vec2 c){'
+          ' f = vec4(c / resolution, 0.0, 1.0); }')
+
+ISF_TWO_IMAGES = '''/*{
+  "INPUTS": [
+    {"NAME": "src0", "TYPE": "image", "SOURCE": "a"},
+    {"NAME": "src1", "TYPE": "image", "SOURCE": "b"}
+  ]
+}*/
+uniform sampler2D src0;
+uniform sampler2D src1;
+void main() {
+    fragColor = texture(src0, gl_FragCoord.xy / 100.0)
+              + texture(src1, gl_FragCoord.xy / 100.0);
+}
+'''
+
 NO_ENTRY_ISF = ('/*{"INPUTS": [{"NAME": "Zoom", "TYPE": "float",'
                 ' "DEFAULT": 0.5, "MIN": 0.0, "MAX": 1.0}]}*/\n'
                 'varying vec2 vPos;\n')
@@ -101,6 +119,15 @@ class NeverRaisesTests(unittest.TestCase):
                 self.assertEqual('internal-error', r.rejections[0].gate)
 
 
+    def test_isf_without_main_is_declined(self):
+        src = ('/*{"INPUTS": [{"NAME": "Zoom", "TYPE": "float",'
+               ' "DEFAULT": 0.5, "MIN": 0.0, "MAX": 1.0}]}*/\n'
+               '// a header but no entry point\n')
+        r = convert(src)
+        self.assertFalse(r.ok)
+        self.assertIn('missing-entry-point',
+                      [x.gate for x in r.rejections])
+
     def test_isf_surplus_inputs_are_baked_not_declined(self):
         """Known gap, recorded rather than hidden.
 
@@ -123,7 +150,7 @@ class NeverRaisesTests(unittest.TestCase):
 
 class ForceTests(unittest.TestCase):
     def test_force_marks_the_result_forced(self):
-        r = convert(SHADERTOY_TWO_CHANNELS, force=True)
+        r = convert(REDECL, force=True)
         self.assertTrue(r.ok, r.rejections)
         self.assertTrue(any('FORCED' in w for w in r.warnings))
 
@@ -131,6 +158,29 @@ class ForceTests(unittest.TestCase):
         r = convert(HLSL, force=True)
         self.assertFalse(r.ok)
         self.assertIn('hlsl-milkdrop',
+                      [x.gate for x in r.rejections])
+
+    def test_force_does_not_collapse_images(self):
+        r = convert(SHADERTOY_TWO_CHANNELS, force=True)
+        self.assertFalse(r.ok)
+        self.assertIn('shadertoy-multi-channel',
+                      [x.gate for x in r.rejections])
+
+    def test_force_does_not_override_the_image_budget(self):
+        r = convert(ISF_TWO_IMAGES, force=True)
+        self.assertFalse(r.ok)
+        self.assertIn('isf-multiple-image-inputs',
+                      [x.gate for x in r.rejections])
+
+    def test_force_does_not_override_the_parameter_budget(self):
+        source = ('/*{"parameters": [%s]}*/'
+                  ' void mainImage(out vec4 f, in vec2 c){'
+                  ' f = vec4(c, 1.0); }'
+                  % ', '.join('{"name": "p%d", "default": 0.5}' % i
+                              for i in range(9)))
+        r = convert(source, force=True)
+        self.assertFalse(r.ok)
+        self.assertIn('too-many-parameters',
                       [x.gate for x in r.rejections])
 
 
