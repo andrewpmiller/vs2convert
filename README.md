@@ -1,21 +1,21 @@
 # vs2convert
 
-Turn a Shadertoy, ISF, or GLSLSandbox shader into a `.frag` file for VS-2.
+Turn a Shadertoy, ISF, or GLSLSandbox shader into a `.frag` file for VS 2.
 
 One command reads the source, works out what kind of shader it is, converts
-the body and parameters, checks the result against VS-2's rules, and writes
+the body and parameters, checks the result against VS 2's rules, and writes
 the file. Converting doesn't download anything, and it doesn't need a GPU
 unless you ask it to render the result.
 
 This is an independent project. It is not affiliated with or endorsed by
-Imaginando, the maker of VS-2.
+Imaginando, the maker of VS 2.
 
 ## What you need
 
 - Python 3.10 or newer. Development and testing use 3.14.
 - A copy of this repository. The package is not on PyPI, so install from a
   checkout.
-- VS-2, to load the finished `.frag`.
+- VS 2, to load the finished `.frag`.
 - For `--verify`: `moderngl`, NumPy, Pillow, and a working OpenGL driver.
 
 ## Install
@@ -117,11 +117,11 @@ for HLSL syntax (`frac`, `lerp`, `texture2D`, `SV_Target`, `Texture2D`,
 `technique`, `floatN main`), so an unusual HLSL file can slip through;
 `--verify` will usually catch it.
 
-VS-2 exposes a single `imageTex`, so a shader may use one image input. Two
+VS 2 exposes a single `imageTex`, so a shader may use one image input. Two
 distinct image inputs, or two different `iChannel`s, are declined rather than
 silently collapsed onto the first; `--force` cannot override that either.
 
-VS-2 takes at most 7 parameters. A source whose Shadertoy parameters block
+VS 2 takes at most 7 parameters. A source whose Shadertoy parameters block
 or uniform declarations exceed that is declined, and `--force` does not
 override it. ISF INPUTS are handled differently: beyond the first 7 they are
 baked into the shader at their default values, and every baked input is
@@ -153,16 +153,16 @@ already in the body:
 
 A note that starts with `UNVERIFIED` is different from a refusal. The
 conversion was written, but the tool could not prove one part of the mapping
-matches the original. One case is a Shadertoy `iChannel`: VS-2's `imageTex`
+matches the original. One case is a Shadertoy `iChannel`: VS 2's `imageTex`
 is not a drop-in replacement for every channel type, so the output is marked
-and you should look at it in VS-2 before trusting it. The file is still
+and you should look at it in VS 2 before trusting it. The file is still
 written, and the run exits 0 unless you passed `--strict`.
 
 ## Options
 
 **`--verify`** renders the converted file headlessly and prints the measured
 luminance mean, spread, alpha and motion. It answers "does this compile and
-draw something that moves", not "does this match VS-2". A passing render is
+draw something that moves", not "does this match VS 2". A passing render is
 evidence the file works, not proof it looks like the original. Needs the
 render extra and a GL driver.
 

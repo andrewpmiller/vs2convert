@@ -57,9 +57,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) { ... }
 currently ignored: the converter projects the body onto its final pass from
 the source itself, and never needs the other two.
 
-## What VS-2 can represent
+## What VS 2 can represent
 
-VS-2 binds **one** image, exposed as `imageTex`. A Shadertoy channel slot can
+VS 2 binds **one** image, exposed as `imageTex`. A Shadertoy channel slot can
 hold many things, and only the shader page says which.
 
 | `sampler` in the sidecar | Outcome |
