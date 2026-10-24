@@ -59,7 +59,8 @@ the source itself, and never needs the other two.
 
 ## What VS 2 can represent
 
-VS 2 binds **one** image, exposed as `imageTex`. A Shadertoy channel slot can
+VS 2 binds **one** image, exposed as `imageTex`; it also has a fixed audio
+sampler, `fftTex`, that no channel is mapped to. A Shadertoy channel slot can
 hold many things, and only the shader page says which.
 
 | `sampler` in the sidecar | Outcome |
@@ -67,7 +68,8 @@ hold many things, and only the shader page says which.
 | `texture`, `image`, `video`, `2d` | Converts; the channel is marked **CONFIRMED** |
 | no sidecar, or the channel is absent from it | Converts, marked **UNVERIFIED**; `--strict` exits 5 |
 | declared with no `sampler` | Converts, marked **UNVERIFIED** |
-| `buffer`, `cube`, `cubemap`, `audio`, `keyboard` | **Declined**: `shadertoy-unrepresentable-channel` |
+| `buffer`, `cube`, `cubemap`, `keyboard` | **Declined**: `shadertoy-unrepresentable-channel` |
+| `audio` | **Declined**: `shadertoy-unrepresentable-channel`. `fftTex` exists, but no mapping is implemented and `audio` does not say waveform or FFT |
 
 Two rules hold regardless of the sidecar:
 

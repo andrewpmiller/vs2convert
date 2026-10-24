@@ -75,7 +75,7 @@ def detect_format(source: str) -> dict:
         error_gates.append('hlsl-milkdrop')
     
     # Check for engine variable redeclaration
-    ENGINE_VARS = ['resolution', 'time', 'texCoord', 'color', 'alpha', 'imageTex', 'imageResolution']
+    ENGINE_VARS = ['resolution', 'time', 'texCoord', 'color', 'alpha', 'imageTex', 'imageResolution', 'fftTex']
     ENGINE_VAR_RE = re.compile(r'^(float|vec2|vec3|vec4|int|mat2|mat3|sampler2D)\s+(' + '|'.join(ENGINE_VARS) + r')\b')
     for i, line in enumerate(code.split('\n'), 1):
         if line and not line[0].isspace() and ENGINE_VAR_RE.match(line):
@@ -90,15 +90,15 @@ def detect_format(source: str) -> dict:
     # so an unaliased reference is expected input, not a defect.
     #
     # The one case still worth declining is a Shadertoy shader that reads
-    # several DISTINCT channels, since VS-2 exposes a single imageTex and
-    # collapsing them would silently change the image. See the generator's
-    # iChannel handling.
+    # several DISTINCT channels, since VS-2 binds one imageTex (fftTex is
+    # the engine's fixed audio sampler) and collapsing them would silently
+    # change the image. See the generator's iChannel handling.
     _channels_used = sorted(set(re.findall(r'\biChannel([0-3])\b', code)))
     if len(_channels_used) > 1:
         errors.append(
-            "reads %d distinct iChannels (iChannel%s); VS-2 exposes a single "
-            "imageTex, so the channels would have to be collapsed. Convert by "
-            "hand"
+            "reads %d distinct iChannels (iChannel%s); VS-2 binds one "
+            "imageTex and one fixed audio sampler (fftTex), so the channels "
+            "would have to be collapsed. Convert by hand"
             % (len(_channels_used), ''.join(_channels_used)))
         error_gates.append('shadertoy-multi-channel')
     
@@ -228,7 +228,8 @@ def _extract_parameters(source: str) -> list:
 #    configured in VS-2 to show anything, and conversion warns about it.
 #
 # 2. Shadertoy shaders reading more than one distinct iChannel are declined:
-#    VS-2 exposes a single imageTex, so the channels cannot be preserved.
+#    VS-2 binds one imageTex plus the fixed fftTex, so the channels cannot
+#    be preserved.
 #    That is a real limit of the engine, demonstrated by reading two.
 #
 # 3. ISF `TYPE: image` inputs convert. An earlier revision declined them,

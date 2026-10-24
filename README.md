@@ -117,9 +117,10 @@ for HLSL syntax (`frac`, `lerp`, `texture2D`, `SV_Target`, `Texture2D`,
 `technique`, `floatN main`), so an unusual HLSL file can slip through;
 `--verify` will usually catch it.
 
-VS 2 exposes a single `imageTex`, so a shader may use one image input. Two
-distinct image inputs, or two different `iChannel`s, are declined rather than
-silently collapsed onto the first; `--force` cannot override that either.
+VS 2 binds one image, exposed as `imageTex`, so a shader may use one image
+input. Two distinct image inputs, or two different `iChannel`s, are declined
+rather than silently collapsed onto the first; `--force` cannot override that
+either.
 
 VS 2 takes at most 7 parameters. A source whose Shadertoy parameters block
 or uniform declarations exceed that is declined, and `--force` does not
@@ -204,9 +205,11 @@ The message names the gate, so start there.
   `main()`. It is not a complete shader, or it was truncated.
 - **A suitability decline (exit 3)** means the format is recognised but
   cannot be converted: HLSL or MilkDrop, more than 7 parameters, distinct
-  `iChannel`s, or a channel that is not a plain image (buffer, cubemap,
-  audio). `--force` does not override these. The action line says whether to
-  edit the source or port it by hand.
+  `iChannel`s, or a channel VS 2 has no input for (buffer, cubemap, keyboard).
+  An `audio` channel is declined too - VS 2 does have an audio sampler,
+  `fftTex`, but no mapping is implemented and the metadata does not say
+  whether it is a waveform or an FFT. `--force` does not override these. The
+  action line says whether to edit the source or port it by hand.
 - **"would overwrite"** means the output path is the input, whether you named
   it or the default `.frag` would replace a `.frag` input. Give the output a
   different name.

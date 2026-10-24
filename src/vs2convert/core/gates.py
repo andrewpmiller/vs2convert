@@ -143,11 +143,14 @@ GATES = [
     Gate(
         id='shadertoy-multi-channel',
         trigger='two or more distinct iChannelN reads in one body',
-        reason='VS-2 exposes a single imageTex, so the channels cannot '
-               'be preserved. Convert it by hand',
+        reason='VS-2 binds a single imageTex and a fixed audio fftTex, so '
+               'the channels cannot be preserved. Convert it by hand',
         evidence=(
             'formal-spec.md:26 and :274 - iChannel0..3 map to imageTex, a '
-            'SINGLE sampler. Two distinct channels have no faithful target. '
+            'SINGLE sampler. fftTex is a separate engine-owned audio sampler '
+            '(factory-examples/bars_spectrum_example.frag), not a slot the '
+            'converter can bind. Two distinct channels have no faithful '
+            'target. '
             'Researched 2026-09-25: a Shadertoy iChannel is a binding SLOT, '
             'not a known image - it may hold a texture, feedback buffer, '
             'cubemap, video, keyboard or audio, and "iChannel0 does not '
@@ -204,16 +207,21 @@ GATES = [
     ),
     Gate(
         id='shadertoy-unrepresentable-channel',
-        trigger='metadata declaring a channel as buffer/cubemap/audio',
-        reason='is not a plain image',
+        trigger='metadata declaring a channel as buffer/cubemap/audio/keyboard',
+        reason='not a bindable image (audio: no FFT/waveform mapping yet)',
         evidence=(
-            'formal-spec.md:26 and :274 - a SINGLE sampler, imageTex, bound '
-            'from the layer-configured image. Verified: a converter run with '
+            'formal-spec.md:26 and :274 - ONE bindable image, imageTex, from '
+            'the layer-configured image. Verified: a converter run with '
             'channels={"iChannel0":{"sampler":"buffer"}} refuses, and the same '
-            'shader with sampler "texture" converts. A channel declared as a '
-            'buffer, cubemap or audio input carries data one image cannot '
-            'hold, so this refusal is a fact about the target, not a '
-            'preference. Decided from supplied metadata, never guessed.'
+            'shader with sampler "texture" converts. A buffer, cubemap or '
+            'keyboard channel has no VS-2 input at all. audio is refused for '
+            'a narrower reason: fftTex IS a pre-declared sampler2D '
+            '(factory-examples/bars_spectrum_example.frag samples '
+            'texture(fftTex, vec2(freq, 0.0))), but no mapping is '
+            'implemented here, and "audio" does not distinguish a waveform '
+            'channel from an FFT channel, so a rename would silently produce '
+            'the wrong signal. Decided from supplied metadata, never '
+            'guessed.'
         ),
         allows=(
             'A channel declared as a texture/video/2d converts and is marked '

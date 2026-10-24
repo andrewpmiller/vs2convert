@@ -7,7 +7,7 @@ parameter remapping, builtin renames) -> output-pattern rewrite -> precision blo
 
 Hard gates (ConversionError): MilkDrop/HLSL, bundled textures, feedback buffers /
 ISF TARGET inputs, and Shadertoy shaders reading more than one distinct
-iChannel (VS-2 exposes a single imageTex).
+iChannel (VS-2 binds one imageTex plus the engine audio sampler fftTex).
 
 Image inputs are NOT gated. A single iChannel0 read, or an ISF
 `TYPE: image` input, renames to `imageTex` per formal-spec.md, which VS-2
@@ -28,7 +28,7 @@ MAX_PARAMS = 7
 SPEED_KEYWORDS = ('speed', 'rate', 'frequency', 'freq')
 
 ENGINE_VARS = {'resolution', 'time', 'texCoord', 'color', 'alpha',
-               'imageTex', 'imageResolution'}
+               'imageTex', 'imageResolution', 'fftTex'}
 GLSL_TYPES = ('float', 'vec2', 'vec3', 'vec4', 'int', 'bool',
               'mat2', 'mat3', 'mat4')
 
@@ -529,8 +529,9 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
     _chan_meta = sorted(set(re.findall(r'\biChannel(?:Resolution|Time)\b', body)))
     if len(_channels) > 1:
         raise ConversionError(
-            "reads %d distinct iChannels (iChannel%s): VS-2 exposes a single "
-            "imageTex, so the channels cannot be preserved. Convert by hand"
+            "reads %d distinct iChannels (iChannel%s): VS-2 binds one "
+            "imageTex and one fixed audio sampler (fftTex), so the channels "
+            "cannot be preserved. Convert by hand"
             % (len(_channels), ''.join(_channels)), gate='shadertoy-multi-channel')
     if _channels:
         # SAFETY: a Shadertoy iChannel is a binding SLOT, not a known image.
@@ -539,8 +540,8 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
         # "iChannel0 does not always mean the main texture" - it means whatever
         # the pass configuration attached to slot 0. The pass configuration
         # lives on the Shadertoy page, not in the .txt, so from source alone
-        # we cannot know. Mapping an unknown slot onto VS-2's single imageTex
-        # is therefore a GUESS, and a wrong guess produces a shader that
+        # we cannot know. Mapping an unknown slot onto imageTex is therefore
+        # a GUESS, and a wrong guess produces a shader that
         # renders but is not the original.
         #
         # So: the conversion is allowed to proceed, because refusing every
@@ -560,17 +561,15 @@ def _convert_shadertoy(source: str, report: dict, meta: dict = None) -> tuple:
                 "ordinary image; mapped to VS-2's imageTex." % _slot)
         elif _status == 'unrepresentable':
             raise ConversionError(
-                "iChannel%s is not a plain image (%s). VS-2 has a single "
-                "imageTex and cannot represent it; convert it by hand. "
-                "Metadata said: %s"
-                % (_slot, '; '.join(_notes) or 'unrepresentable sampler',
-                   '; '.join(_notes) or '?'),
+                "cannot be mapped to VS-2: %s. Convert it by hand"
+                % ('; '.join(_notes) or 'unrepresentable sampler'),
                 gate='shadertoy-unrepresentable-channel')
         else:
             report['warnings'].append(
                 "UNVERIFIED: iChannel%s is a Shadertoy binding slot, not a "
                 "guaranteed image - it may be a feedback buffer, cubemap, "
-                "video, or audio. Mapped to VS-2's imageTex, which binds the "
+                "video, or audio (which would need fftTex, not emitted "
+                "here). Mapped to VS-2's imageTex, which binds the "
                 "image set on the layer. Supply pass metadata to confirm (see "
                 "core/shadertoy_meta.py), or check the Shadertoy page's pass "
                 "settings by hand." % _slot)

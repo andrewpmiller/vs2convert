@@ -289,7 +289,8 @@ def _unverified_body(text):
     so the default output stays scannable."""
     if "iChannel" in text:
         return ["Shadertoy channels can also be buffers, cubemaps, video or",
-                "audio, and only the shader page says which. Check it there,",
+                "audio (VS 2 has an audio sampler, fftTex, but no mapping",
+                "yet), and only the shader page says which. Check it there,",
                 "or add a <name>.stmeta.json beside the .txt."]
     return _wrap([text])
 

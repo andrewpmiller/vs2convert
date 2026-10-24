@@ -90,7 +90,7 @@ def _has_hlsl_leftovers(content: str) -> bool:
 
 def _has_engine_var_redecl(content: str) -> bool:
     """Check for engine variable redeclaration."""
-    engine_vars = ['resolution', 'time', 'texCoord', 'color', 'alpha', 'imageTex', 'imageResolution']
+    engine_vars = ['resolution', 'time', 'texCoord', 'color', 'alpha', 'imageTex', 'imageResolution', 'fftTex']
     engine_var_re = re.compile(r'^(float|vec2|vec3|vec4|int|mat2|mat3|sampler2D)\s+(' + '|'.join(engine_vars) + r')\b')
     
     for line in content.split('\n'):

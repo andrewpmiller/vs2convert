@@ -36,7 +36,8 @@ WHAT IT RESOLVES
 ----------------
   channels  : replaces the UNVERIFIED warning with a CONFIRMED one when the
               sampler is an ordinary user image, or refuses when the channel
-              is a buffer/cubemap/audio that VS-2 cannot represent.
+              is a buffer/cubemap/keyboard, or audio (VS-2 has an audio
+              sampler, fftTex, but no mapping is implemented).
   passes    : tells the converter which pass writes the screen, instead of
               assuming the last one.
   uniforms  : supplies the iChannelResolution-style dimensions if needed.
@@ -49,9 +50,10 @@ import json
 import os
 import re
 
-# Sampler kinds VS-2 can represent. VS-2 binds a single image to `imageTex`.
+# Sampler kinds VS-2 can bind. VS-2 binds one image to `imageTex`.
 REPRESENTABLE_SAMPLERS = {'texture', 'image', 'video', '2d'}
-# Sampler kinds it cannot: these carry data a single image cannot.
+# Refused: VS-2 has no input for these, and audio has no mapping yet
+# (it would need `fftTex`, and "audio" does not say waveform or FFT).
 UNREPRESENTABLE_SAMPLERS = {'buffer', 'cube', 'cubemap', 'audio', 'keyboard'}
 
 _META_BLOCK_RE = re.compile(r'/\*(.*?)\*/', re.DOTALL)
@@ -129,8 +131,15 @@ def resolve_channels(meta, channels_found):
             notes.append('iChannel%s: declared but no sampler given' % ch)
             worst = 'unverified' if worst == 'confirmed' else worst
         elif sampler in UNREPRESENTABLE_SAMPLERS:
-            notes.append('iChannel%s is a %s, which VS-2 cannot represent '
-                         '(it has a single imageTex)' % (ch, sampler))
+            if sampler == 'audio':
+                notes.append(
+                    'iChannel%s is audio: VS-2 has an audio sampler '
+                    '(fftTex), but no mapping is implemented and "audio" '
+                    'does not say whether the channel is a waveform or an '
+                    'FFT' % ch)
+            else:
+                notes.append('iChannel%s is a %s, which VS-2 has no input '
+                             'for' % (ch, sampler))
             worst = 'unrepresentable'
         elif sampler in REPRESENTABLE_SAMPLERS:
             src = entry.get('source', '')

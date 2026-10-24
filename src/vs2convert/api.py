@@ -59,16 +59,19 @@ _GATE_ADVICE = {
                                "a single channel, or convert by hand.",
     "isf-multiple-image-inputs": "VS-2 binds one image. Use a single TYPE:image "
                                  "input, or convert by hand.",
-    "shadertoy-unrepresentable-channel": "The pass metadata declares a buffer, "
-                                         "cubemap or audio channel, which VS-2 "
-                                         "cannot bind. Change the channel to a "
-                                         "texture, or convert by hand.",
+    "shadertoy-unrepresentable-channel": "The pass metadata declares a channel "
+                                         "VS-2 has no input for (buffer, "
+                                         "cubemap, keyboard), or an audio "
+                                         "channel with no implemented mapping "
+                                         "(VS-2 has fftTex). Change the "
+                                         "channel to a texture, or convert by "
+                                         "hand.",
     "shadertoy-channel-uncertainty": "Pass the Shadertoy channel declarations "
                                      "with --meta so the binding can be "
                                      "confirmed.",
     "engine-var-redeclaration": "Remove the declaration; VS-2 provides "
                                 "resolution, time, texCoord, color, alpha, "
-                                "imageTex and imageResolution.",
+                                "imageTex, imageResolution and fftTex.",
     "too-many-parameters": "VS-2 accepts at most 7 parameters. Remove the "
                            "extras, or hard-code their values.",
     "missing-entry-point": "The source has no mainImage()/main(). Check that it "
