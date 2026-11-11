@@ -135,7 +135,25 @@ class FlagTests(unittest.TestCase):
         r = run(['ok.fs', '--dry-run'], self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.dir, 'ok.frag')))
-        self.assertIn('dry run', r.stdout.lower())
+        # The verdict goes to stderr so `--dry-run > out.frag` writes a valid
+        # shader. It used to land on stdout, and the file began with the
+        # banner instead of GLSL.
+        self.assertIn('dry run', r.stderr.lower())
+        self.assertNotIn('dry run', r.stdout)
+        self.assertTrue(r.stdout.lstrip().startswith('/*'),
+                        'stdout is not the shader: %r' % r.stdout[:80])
+
+    def test_dry_run_decline_keeps_stdout_clean(self):
+        bad = os.path.join(self.dir, 'bad.fs')
+        with open(bad, 'w') as f:
+            f.write('void mainImage(out vec4 f, in vec2 c){'
+                    ' f = texture(iChannel0, c) * texture(iChannel1, c); }')
+        r = run(['bad.fs', '--dry-run'], self.dir)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, '',
+                         'a decline must not put anything on stdout')
+        self.assertIn('github.com/andrewpmiller/vs2convert/issues/new',
+                      r.stderr)
 
     def test_validation_is_always_on(self):
         """There is no --validate flag: every conversion is validated before

@@ -168,7 +168,9 @@ evidence the file works, not proof it looks like the original. Needs the
 render extra and a GL driver.
 
 **`--dry-run`** prints the converted shader instead of writing it. Useful
-when you want to read the manifest or diff two attempts.
+when you want to read the manifest or diff two attempts. The shader is the
+only thing on stdout, so `vs2convert x.fs --dry-run > x.frag` writes a
+valid file; the verdict goes to stderr.
 
 **`--force`** converts past a capability gate. It warns that the output is
 very likely broken, because it usually is. It cannot override HLSL/MilkDrop,

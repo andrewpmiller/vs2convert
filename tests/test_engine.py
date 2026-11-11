@@ -597,6 +597,43 @@ class RealShadertoyGlitchTests(unittest.TestCase):
         self.assertNotIn('srcTime', frag)
 
 
+class ShadowRenameScopeTests(unittest.TestCase):
+    """A shadowing declaration only shadows INSIDE its own block.
+
+    Reproduced with shaders-to-convert/Jazz_Universe.fs (2026-11-11). The ISF
+    declares `float time = TIME;` inside main(), and volumetricFog() reads the
+    engine clock through the TIME macro. The rename ran file-wide, so
+    volumetricFog received `srcTime`, which is not declared there, and the
+    emitted GLSL did not compile:
+
+        ERROR: 0:101: Use of undeclared identifier 'srcTime'
+        ERROR: 0:105: Use of undeclared identifier 'edge'
+
+    (the second error shares the cause: the `edge` declaration above it was
+    rejected, so the later read of `edge` had nothing to bind to).
+    """
+
+    SRC = ('/*{"INPUTS": [{"NAME": "Zoom", "TYPE": "float",'
+           ' "DEFAULT": 0.5, "MIN": 0.0, "MAX": 1.0}]}*/\n'
+           'float helper(float x) { return x + TIME; }\n'
+           'void main() {\n'
+           '    float time = TIME;\n'
+           '    fragColor = vec4(vec3(helper(time) * time * Zoom), 1.0);\n'
+           '}\n')
+
+    def test_engine_time_survives_outside_the_declaring_block(self):
+        frag = convert(self.SRC, 'ISF', 'scope')['frag']
+        # helper() never declares `time`, so its TIME reference must stay the
+        # engine uniform rather than become an undeclared `srcTime`.
+        self.assertRegex(frag, r'return x \+ time;',
+                         'the engine clock inside helper() was renamed')
+
+    def test_local_is_renamed_and_passed_to_the_helper(self):
+        frag = convert(self.SRC, 'ISF', 'scope')['frag']
+        self.assertIn('float srcTime = time;', frag)
+        self.assertIn('helper(srcTime)', frag)
+
+
 class GLSLSandboxTests(unittest.TestCase):
     """GLSLSandbox: uniform time/resolution declarations, no JSON manifest.
 

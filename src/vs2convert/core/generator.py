@@ -365,6 +365,11 @@ def _rename_shadowed_engine_vars(source: str) -> str:
     engine uniform stays reachable.
     """
     lines = source.split('\n')
+    # Byte offset of each line start, so a declaration can be located in the
+    # whole source and its enclosing block resolved.
+    starts = [0]
+    for line in lines[:-1]:
+        starts.append(starts[-1] + len(line) + 1)
     type_alt = '|'.join(GLSL_TYPES)
     for var in sorted(ENGINE_VARS):
         decl = re.compile(
@@ -376,13 +381,20 @@ def _rename_shadowed_engine_vars(source: str) -> str:
         if not decl_lines:
             continue
         renamed = 'src' + var[0].upper() + var[1:]
+        # A shadowing declaration only shadows INSIDE its own block. Renaming
+        # file-wide rewrote the engine uniform inside functions that never
+        # declared the name: Jazz_Universe's `volumetricFog` reads the engine
+        # `time`, received `srcTime`, and the GLSL did not compile. A
+        # top-level declaration (no enclosing block) shadows everywhere.
+        scopes = [_enclosing_block(source, starts[i]) or (0, len(source))
+                  for i in decl_lines]
         for i, line in enumerate(lines):
             m = decl.match(line)
             if m:
                 # Declaration: rename the declared name, keep the init as-is.
                 lines[i] = '%s%s %s = %s' % (m.group(1), m.group(2),
                                              renamed, m.group(3))
-            else:
+            elif any(s <= starts[i] < e for s, e in scopes):
                 lines[i] = re.sub(r'\b' + var + r'\b', renamed, line)
     return '\n'.join(lines)
 

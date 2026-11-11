@@ -72,7 +72,12 @@ Examples:
                         help="Show every step and the full text of each note")
     args = parser.parse_args()
 
-    r = Reporter(verbose=args.verbose)
+    # --dry-run's contract is `the shader on stdout`, so the run's own
+    # output goes to stderr. Otherwise `vs2convert --dry-run x > out.frag`
+    # writes a file whose first lines are the status banner, and that is
+    # not valid GLSL.
+    r = Reporter(verbose=args.verbose,
+                 stream=sys.stderr if args.dry_run else None)
 
     # --- read -----------------------------------------------------------------
     if args.source == "-":
@@ -186,7 +191,7 @@ Examples:
     # --- write ----------------------------------------------------------------
     if args.dry_run:
         r.success(name, wrote="(dry run, nothing written)", stats=stats)
-        print()
+        print(file=r.out)
         print(result.frag)
         return 0
 
@@ -213,9 +218,9 @@ def _report_decline(r, name, result, source, argv=None):
         body.extend(_wrap("  " + rejection.detail))
     r.failure(name, "declined", body=body,
               action="fix the source, or convert it by hand", exit_code=code)
-    print()
+    print(file=r.out)
     print("Report this with the source: %s"
-          % _issue_url(name, result, source, argv))
+          % _issue_url(name, result, source, argv), file=r.out)
 
 
 def _issue_url(name, result, source, argv=None):
